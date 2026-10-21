@@ -33,7 +33,9 @@ jobs:
       fail-fast: false
       matrix:
         mongo: ["7.0", "8.0"]
-    runs-on: ubuntu-latest
+    # MongoDB 8.0 refuses to start on Linux 6.19 to 7.0.13 (SERVER-121912),
+    # the kernel some ubuntu-latest runners now have; 22.04's is older
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/checkout-core

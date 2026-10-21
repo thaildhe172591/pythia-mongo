@@ -15,6 +15,10 @@ never published — is in it.
   anywhere).
 - **PyPI metadata:** the README as the project page, classifiers (Alpha,
   Python 3.9 to 3.13), and links to the changelog and the issues.
+- **CI's live job runs on ubuntu-22.04.** MongoDB 8.0 refuses to start on
+  Linux 6.19 to 7.0.13 (SERVER-121912), the kernel some ubuntu-latest
+  runners now have; the job failed whenever it landed on one. A MongoDB
+  server issue: pythia-mongo, as a client, is not affected.
 
 ## 0.3.0.dev0 — unreleased
 

@@ -1,30 +1,67 @@
 """MongoDB, through pymongo, as a pythia-core engine.
 
-It answers the connect tier (here) and the read tier (read.py). MongoDB
-has no SQL and no catalog of dependencies: what it keeps is read as command
-documents (catalog.py), and what it cannot see — the application code
-around it — is said in every answer that depends on it.
+It answers the connect tier (here), the read tier (read.py), and the write
+and predict tiers (write.py). MongoDB has no SQL and no catalog of
+dependencies: what it keeps is read as command documents (catalog.py), and
+what it cannot see — the application code around it — is said in every
+answer that depends on it. Data is rehearsed in a transaction; everything
+else is predicted, written once, and read back (pythia-core's predict tier).
 """
 import sys
 
-from . import __version__, read
+from . import __version__, read, write
 from .catalog import run
+
+# reads a transaction may hold; listCollections and listIndexes it may not
+IN_TRANSACTION = ("aggregate", "find")
 
 CONFIG_REL = ".pythia/mongo/connections.json"
 REQUIRED = ("host", "database")
 
 
 class MongoConn:
-    """One client and the database a connection names."""
+    """One client and the database a connection names, and the transaction a
+    rehearsal opens. pythia-core commits it after an approval and aborts it
+    after a preview, as it does a SQL engine's."""
 
     def __init__(self, client, db):
-        self.client, self.db = client, db
+        self.client, self.db, self.session = client, db, None
+
+    def _within(self, command):
+        first = next(iter(command))
+        return self.session if self.session is not None and first in IN_TRANSACTION \
+            else None
 
     def run(self, name, command, cursor, admin):
         db = self.client.admin if admin else self.db
         if cursor:
-            return list(db.cursor_command(command))
-        return db.command(command)
+            return list(db.cursor_command(command, session=self._within(command)))
+        return db.command(command, session=self._within(command))
+
+    def run_statement(self, command, in_txn):
+        """A statement of the developer's: inside the rehearsal's transaction,
+        or on its own (a predicted command, after the approval)."""
+        if in_txn and self.session is None:
+            self.session = self.client.start_session()
+            self.session.start_transaction()
+        return self.db.command(command, session=self.session if in_txn else None)
+
+    def commit(self):
+        session, self.session = self.session, None
+        if session is not None:
+            try:
+                session.commit_transaction()
+            finally:
+                session.end_session()
+
+    def rollback(self):
+        session, self.session = self.session, None
+        if session is not None:
+            try:
+                if session.in_transaction:
+                    session.abort_transaction()
+            finally:
+                session.end_session()
 
 
 class MongoEngine:
@@ -35,6 +72,19 @@ class MongoEngine:
     version = __version__
     bind_style = "document"
     default_port = 27017
+    rollback_notes = {
+        "source": "Yes — a view's pipeline and a collection's validator are "
+                  "snapshotted before every write; a new view's undo is a drop.",
+        "comments": "Not used: MongoDB keeps no comments on objects (a field's "
+                    "description lives in the $jsonSchema validator).",
+        "data_dml": "No. After commit only a backup, or a point-in-time restore, "
+                    "brings documents back. Revalidation checks the documents; it is "
+                    "not an undo.",
+        "structural": "No. A dropped collection or index is gone; the prediction "
+                      "shows what would read what is dropped.",
+        "grants": "Not used: users and roles are a DBA's, by hand.",
+        "session": "Not used: MongoDB has no session settings to apply.",
+    }
 
     # --- the connection's life ------------------------------------------------
 
@@ -86,7 +136,10 @@ class MongoEngine:
         return conn
 
     def close(self, conn):
-        conn.client.close()
+        try:
+            conn.rollback()
+        finally:
+            conn.client.close()
 
     def connect_failure(self, exc, conn_name, entry):
         """Name the next step for the failures MongoDB and pymongo diagnose."""
@@ -168,3 +221,45 @@ class MongoEngine:
 
     def compile_errors(self, conn, schema, name):
         return read.compile_errors(conn, schema, name, self.driver_errors())
+
+    # --- the write tier (write.py) -----------------------------------------------
+
+    def classify(self, text):
+        return write.classify(text)
+
+    def prepare_statement(self, text, group):
+        return write.prepare_statement(text, group)
+
+    def parse_object(self, stmt, group):
+        return write.parse_object(stmt, group)
+
+    def destructive_reason(self, stmt, group):
+        return write.destructive_reason(stmt, group)
+
+    def dml_probe(self, stmt):
+        return write.dml_probe(stmt)
+
+    def measure_row_set(self, conn, target, pred):
+        return write.measure_row_set(conn, target, pred)
+
+    def snapshot(self, conn, schema, group, ident):
+        return write.snapshot(conn, schema, group, ident)
+
+    def rehearse(self, conn, schema, group, stmt, ident, snapshot):
+        return write.rehearse(conn, schema, group, stmt, ident, snapshot,
+                              self.driver_errors())
+
+    def restore_statement(self, group, ident, before, outcome):
+        return write.restore_statement(group, ident, before, outcome)
+
+    def privilege_warning(self, conn, schema):
+        return write.privilege_warning(conn, schema)
+
+    # --- the predict tier (write.py) ----------------------------------------------
+
+    def execute(self, conn, schema, group, stmt, ident):
+        return write.execute(conn, schema, group, stmt, ident, self.driver_errors())
+
+    def verify_written(self, conn, schema, group, stmt, ident, outcome):
+        return write.verify_written(conn, schema, group, stmt, ident, outcome,
+                                    self.driver_errors())

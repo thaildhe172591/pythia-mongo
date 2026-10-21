@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pythia-mongo"
-version = "0.1.0.dev0"
+version = "0.2.0.dev0"
 description = "pythia for MongoDB: database development for AI agents over pythia-core - validators, views and indexes read live, impact with its blind spots named, and an approved write path."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.9"
 # pythia-core and the driver, nothing else (tests/test_mongo.py).
-dependencies = ["pythia-core>=0.10.0.dev0", "pymongo>=4.9"]
+dependencies = ["pythia-core>=0.11.0.dev0", "pymongo>=4.9"]
 keywords = ["mongodb", "database", "agent-skills"]
 
 [project.urls]

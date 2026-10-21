@@ -1,0 +1,18 @@
+{
+  "purpose": "a view's pipeline run over its source, for its prediction: once over no documents (does MongoDB accept it?) and once over the first documents (does it run?)",
+  "binds": {
+    "n": "the collection or view the pipeline reads",
+    "p": "the pipeline, ending in $count; classify refuses $out, $merge and JavaScript in any statement it comes from"
+  },
+  "returns": "aggregate cursor: one document {n}, or none",
+  "command": {
+    "aggregate": {
+      "$bind": "n"
+    },
+    "pipeline": {
+      "$bind": "p"
+    },
+    "cursor": {},
+    "maxTimeMS": 30000
+  }
+}

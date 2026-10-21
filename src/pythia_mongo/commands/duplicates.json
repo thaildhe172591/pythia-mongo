@@ -1,0 +1,43 @@
+{
+  "purpose": "the keys a unique index would meet more than once, for its prediction",
+  "binds": {
+    "n": "the collection",
+    "f": "the documents the index holds (partialFilterExpression, or the sparse rule)",
+    "g": "the index key as a group key: {field: \"$field\"}"
+  },
+  "returns": "aggregate cursor: up to 3 documents {_id: the key, n}",
+  "command": {
+    "aggregate": {
+      "$bind": "n"
+    },
+    "pipeline": [
+      {
+        "$match": {
+          "$bind": "f"
+        }
+      },
+      {
+        "$group": {
+          "_id": {
+            "$bind": "g"
+          },
+          "n": {
+            "$sum": 1
+          }
+        }
+      },
+      {
+        "$match": {
+          "n": {
+            "$gt": 1
+          }
+        }
+      },
+      {
+        "$limit": 3
+      }
+    ],
+    "cursor": {},
+    "maxTimeMS": 30000
+  }
+}

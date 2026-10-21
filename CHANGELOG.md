@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.2.0.dev0 — unreleased
+
+Phase 5b of the plan in pythia-core's DESIGN.md: MongoDB's write tier, on
+pythia-core 0.11.0.dev0 and its predict tier.
+
+- **`apply`, `approve`, `journal`, `history`, `policy`** over pythia-core's
+  gate. A file holds one command document in Extended JSON.
+- **Classification refuses what no group honestly fits:** mongosh
+  JavaScript, several commands, a key written twice, JavaScript anywhere,
+  `$out` and `$merge`, reads, `findAndModify`, upserts, an update or delete
+  of one document among many, users and roles, `renameCollection`,
+  `dropDatabase`, `bypassDocumentValidation`, session and transaction
+  fields, `system.` collections.
+- **Data is rehearsed in a transaction** (a replica set is required) and
+  revalidated by a `$toHashedIndexKey` fingerprint; a document the
+  validator rejects fails the rehearsal, read from the reply.
+- **Views, validators, indexes and drops are predicted** — the documents a
+  validator would reject, a view's pipeline run over no documents and then
+  its first 100 (and every view built on it on top), the duplicates a
+  unique index would meet, the views a drop would break — then run once
+  after the approval and read back; anything unlike the prediction exits 3.
+- **Snapshot and restore** for views and validators; a new view's undo is a
+  drop. The preview warns when the user holds `root`, `dbOwner` or an
+  `AnyDatabase` role.
+- **The live check writes** on MongoDB 7.0 and 8.0: a validator predicted,
+  approved, written and restored, and one whose prediction moved; views,
+  one MongoDB refuses and one that writes; a unique index refused for its
+  duplicates; data rehearsed, rows that move; a drop that breaks a view.
+
 ## 0.1.0.dev0 — unreleased
 
 Phase 5a of the plan in pythia-core's DESIGN.md: MongoDB's connect and read

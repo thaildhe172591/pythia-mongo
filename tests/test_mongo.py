@@ -530,6 +530,398 @@ def test_another_tools_config_is_not_ours():
             os.chdir(keep)
 
 
+# --- Phase 5b: the write tier ---------------------------------------------------------
+
+from pythia_mongo import write  # noqa: E402
+
+
+def doc(**kw):
+    return json.dumps(kw)
+
+
+def classified(text):
+    return write.classify(text)[0]
+
+
+def refusal(text):
+    group, why = write.classify(text)
+    assert group is None, (text, group)
+    return why
+
+
+def test_classify_sorts_every_command_or_says_why_not():
+    assert classified('{"insert": "t_order", "documents": [{"_id": 9, "status": "DRAFT", "total": 1}]}') == "data_dml"
+    assert classified(doc(update="t_order", updates=[{"q": {"status": "DRAFT"},
+                                                       "u": {"$set": {"total": 0}}, "multi": True}])) == "data_dml"
+    assert classified(doc(update="t_order", updates=[{"q": {"_id": 1},
+                                                       "u": {"$set": {"total": 0}}}])) == "data_dml"
+    assert classified(doc(delete="t_order", deletes=[{"q": {"status": "X"}, "limit": 0}])) == "data_dml"
+    assert classified(doc(delete="t_order", deletes=[{"q": {"_id": 3}, "limit": 1}])) == "data_dml"
+    assert classified(doc(create="v_x", viewOn="t_order", pipeline=[])) == "source"
+    assert classified(doc(create="t_new", validator={"a": {"$exists": True}})) == "structural"
+    assert classified(doc(collMod="t_order", validator={"a": {"$exists": True}})) == "source"
+    assert classified(doc(collMod="t_order", validationLevel="moderate")) == "source"
+    assert classified(doc(collMod="v_paid", viewOn="t_order", pipeline=[])) == "source"
+    assert classified(doc(collMod="t_order", index={"name": "ix_order_status", "hidden": True})) == "structural"
+    assert classified(doc(createIndexes="t_order", indexes=[{"key": {"ref": 1}, "name": "ix_ref"}])) == "structural"
+    assert classified(doc(dropIndexes="t_order", index="ix_ref")) == "structural"
+    assert classified(doc(drop="t_order")) == "structural"
+    for text, needle in (
+            ("{ not json", "Extended JSON"),
+            ("db.t_order.insertOne({status: 'DRAFT'})", "mongosh"),
+            ('[{"drop": "a"}, {"drop": "b"}]', "one command"),
+            ('{"drop": "a", "drop": "b"}', "twice"),
+            ("{}", "no command"),
+            (doc(delete="t", deletes=[{"q": {"$where": "this.a > 1"}, "limit": 0}]), "JavaScript"),
+            (doc(insert="t", documents=[{"f": {"$code": "function () {}"}}]), "JavaScript"),
+            (doc(create="v", viewOn="t", pipeline=[{"$group": {"_id": 1, "x": {"$accumulator": {}}}}]), "JavaScript"),
+            (doc(create="v", viewOn="t", pipeline=[{"$out": "t_copy"}]), "$out"),
+            (doc(collMod="v", viewOn="t", pipeline=[{"$merge": {"into": "t2"}}]), "$merge"),
+            (doc(aggregate="t", pipeline=[], cursor={}), "reads"),
+            (doc(find="t", filter={}), "reads"),
+            (doc(findAndModify="t", query={}, remove=True), "findAndModify"),
+            (doc(createUser="u", pwd="x", roles=[]), "DBA"),
+            (doc(grantRolesToUser="u", roles=["root"]), "DBA"),
+            (doc(renameCollection="app.t", to="app.u"), "renameCollection"),
+            (doc(dropDatabase=1), "dropDatabase"),
+            (doc(insert="t", documents=[{}], bypassDocumentValidation=True), "validator"),
+            (doc(insert="t", documents=[{}], writeConcern={"w": 0}), "transaction"),
+            (doc(insert="t", documents=[{}], lsid={"id": 1}), "transaction"),
+            (doc(insert="t", documents=[]), "no document"),
+            (doc(update="t", updates=[{"q": {"a": 1}, "u": {"$set": {"b": 1}}, "upsert": True,
+                                        "multi": True}]), "upsert"),
+            (doc(update="t", updates=[{"q": {"a": 1}, "u": {"$set": {"b": 1}}}]), "multi"),
+            (doc(delete="t", deletes=[{"q": {"a": 1}, "limit": 1}]), "limit"),
+            (doc(update="t", updates=[{"q": {"_id": 1}, "u": {}}, {"q": {"_id": 2}, "u": {}}]), "one per file"),
+            (doc(insert="system.views", documents=[{}]), "system"),
+            (doc(insert=5, documents=[{}]), "collection"),
+            (doc(collMod="t", validator={}, index={"name": "i", "hidden": True}), "one change"),
+            (doc(collMod="v", pipeline=[]), "viewOn"),
+            (doc(compact="t"), "Cannot classify")):
+        assert needle.lower() in refusal(text).lower(), (text, refusal(text))
+
+
+def test_parse_object_names_what_a_definition_change_changes():
+    p = write.parse_object
+    assert p(doc(collMod="t_order", validator={}), "source") == \
+        {"type": "VALIDATOR", "name": "t_order", "schema": None}
+    assert p(doc(create="v_x", viewOn="t", pipeline=[]), "source") == \
+        {"type": "VIEW", "name": "v_x", "schema": None}
+    assert p(doc(collMod="v_x", viewOn="t", pipeline=[]), "source")["type"] == "VIEW"
+    assert p(doc(drop="t"), "structural") is None
+
+
+def test_prepare_statement_is_canonical_json():
+    a = write.prepare_statement('{"drop":"t_order"}', "structural")
+    b = write.prepare_statement('{ "drop" : "t_order" }\n', "structural")
+    assert a == b and json.loads(a) == {"drop": "t_order"}
+
+
+def test_destruction_is_named():
+    d = write.destructive_reason
+    assert "every document" in d(doc(drop="t_order"), "structural")
+    assert "scan" in d(doc(dropIndexes="t_order", index="ix_ref"), "structural")
+    assert "every index" in d(doc(dropIndexes="t_order", index="*"), "structural")
+    assert "every document" in d(doc(delete="t", deletes=[{"q": {}, "limit": 0}]), "data_dml")
+    assert "every document" in d(doc(update="t", updates=[{"q": {}, "u": {"$set": {"a": 1}},
+                                                            "multi": True}]), "data_dml")
+    assert d(doc(delete="t", deletes=[{"q": {"a": 1}, "limit": 0}]), "data_dml") is None
+    assert d(doc(insert="t", documents=[{}]), "data_dml") is None
+    assert d(doc(createIndexes="t", indexes=[{"key": {"a": 1}, "name": "i"}]), "structural") is None
+
+
+def test_dml_probe_reads_the_filter():
+    assert write.dml_probe(doc(update="t_order", updates=[
+        {"q": {"status": "DRAFT"}, "u": {"$set": {"total": 0}}, "multi": True}])) == \
+        ("t_order", {"status": "DRAFT"})
+    assert write.dml_probe(doc(delete="t_order", deletes=[{"q": {"_id": 3}, "limit": 1}])) == \
+        ("t_order", {"_id": 3})
+    assert write.dml_probe(doc(insert="t_order", documents=[{}])) is None
+
+
+def test_a_snapshot_is_the_definition_of_the_right_kind_or_nothing():
+    conn = conn_with()
+    view = {"type": "VIEW", "name": "v_paid", "schema": None}
+    snap = write.snapshot(conn, "app", "source", view)
+    assert json.loads(snap["v_paid"]) == {"viewOn": "t_order",
+                                          "pipeline": [{"$match": {"status": "PAID"}}]}
+    val = {"type": "VALIDATOR", "name": "t_order", "schema": None}
+    assert json.loads(write.snapshot(conn, "app", "source", val)["t_order"]) == {
+        "validator": VALIDATOR, "validationLevel": "strict", "validationAction": "error"}
+    plain = {"type": "VALIDATOR", "name": "t_customer", "schema": None}
+    assert json.loads(write.snapshot(conn, "app", "source", plain)["t_customer"]) == {
+        "validator": {}, "validationLevel": "strict", "validationAction": "error"}
+    # a name that holds another kind of object is no snapshot of this one
+    assert write.snapshot(conn, "app", "source", dict(view, name="t_order")) == {}
+    assert write.snapshot(conn, "app", "source", dict(val, name="v_paid")) == {}
+    assert write.snapshot(conn, "app", "source", dict(view, name="v_new")) == {}
+    assert write.snapshot(conn, "app", "structural", None) == {}
+
+
+def test_restore_puts_back_the_definition_or_drops():
+    r = write.restore_statement
+    val = {"type": "VALIDATOR", "name": "t_order", "schema": None}
+    before = json.dumps({"validator": {"a": {"$exists": True}}, "validationLevel": "strict",
+                         "validationAction": "error"})
+    text = r("source", val, before, {})
+    assert json.loads(text) == {"collMod": "t_order", "validator": {"a": {"$exists": True}},
+                                "validationLevel": "strict", "validationAction": "error"}
+    assert classified(text) == "source"
+    view = {"type": "VIEW", "name": "v_paid", "schema": None}
+    text = r("source", view, json.dumps({"viewOn": "t_order", "pipeline": [{"$match": {}}]}), {})
+    assert json.loads(text) == {"collMod": "v_paid", "viewOn": "t_order",
+                                "pipeline": [{"$match": {}}]}
+    text = r("source", view, "", {})
+    assert json.loads(text) == {"drop": "v_paid"} and classified(text) == "structural"
+
+
+class WriteConn(FakeConn):
+    """FakeConn plus statements, run inside a transaction or not."""
+
+    def __init__(self, answers, replica_set=True, reply=None):
+        hello = {"setName": "rs0", "isWritablePrimary": True} if replica_set else \
+            {"isWritablePrimary": True}
+        super().__init__({"server-hello.json": hello, "collections.json": listing(*ALL),
+                          "collection.json": listing(*ALL), **answers})
+        self.reply, self.statements, self.began = reply or {"n": 1, "ok": 1}, [], 0
+
+    def run_statement(self, command, in_txn):
+        self.statements.append((command, in_txn))
+        self.began += bool(in_txn)
+        reply = self.reply
+        return reply(command) if callable(reply) else reply
+
+
+def rehearse(conn, text, group=None):
+    group = group or write.classify(text)[0]
+    stmt = write.prepare_statement(text, group)
+    ident = write.parse_object(stmt, group)
+    snap = write.snapshot(conn, "app", group, ident) if ident else {}
+    return write.rehearse(conn, "app", group, stmt, ident, snap, DriverError)
+
+
+UPDATE = doc(update="t_order", updates=[{"q": {"status": "DRAFT"}, "u": {"$set": {"total": 0}},
+                                         "multi": True}])
+
+
+def test_data_is_rehearsed_in_a_transaction_on_a_replica_set_only():
+    out = rehearse(WriteConn({}, replica_set=False), UPDATE)
+    assert "replica set" in out["error"] and "standalone" in out["error"]
+    conn = WriteConn({}, reply={"n": 2, "nModified": 2, "ok": 1})
+    out = rehearse(conn, UPDATE)
+    assert out["error"] is None and out["rows"] == 2 and not out.get("predicted")
+    assert conn.statements == [(json.loads(UPDATE), True)]
+    conn = WriteConn({}, reply={"n": 0, "ok": 1, "writeErrors": [
+        {"index": 0, "code": 121, "errmsg": "Document failed validation"}]})
+    out = rehearse(conn, doc(insert="t_order", documents=[{"_id": 9}]))
+    assert out["error"] == "121: Document failed validation", out
+    conn = WriteConn({}, reply={"n": 1, "ok": 1, "writeConcernError": {"code": 64, "errmsg": "w"}})
+    assert "64" in rehearse(conn, UPDATE)["error"]
+
+
+def failing(n, ids=(7, 9)):
+    return lambda c: [{"n": [{"n": n}] if n else [], "first": [{"_id": i} for i in ids[:n]]}]
+
+
+NEW_V = {"$jsonSchema": {"required": ["status", "total", "created"]}}
+
+
+def test_a_validator_change_is_predicted_by_counting_what_it_would_reject():
+    conn = WriteConn({"invalid.json": failing(2)})
+    out = rehearse(conn, doc(collMod="t_order", validator=NEW_V))
+    assert out["predicted"] is True and out["error"] is None and conn.statements == []
+    assert out["broken"] == [("t_order", "COLLECTION", "2 documents fail the new validator "
+                              "(strict, error) — first _id: 7, 9")], out["broken"]
+    asked = [c for n, c in conn.asked if n == "invalid.json"][-1]
+    assert asked["pipeline"][0] == {"$match": {"$nor": [NEW_V]}}
+    assert json.loads(out["after"]) == {"validator": NEW_V, "validationLevel": "strict",
+                                        "validationAction": "error"}
+    assert out["verified"] is True
+    out = rehearse(WriteConn({"invalid.json": failing(0)}), doc(collMod="t_order", validator=NEW_V))
+    assert out["broken"] == [] and out["predicted"]
+
+    def bad(c):
+        raise OperationFailure("unknown top level operator: $foo", 2)
+    out = rehearse(WriteConn({"invalid.json": bad}), doc(collMod="t_order", validator={"$foo": 1}))
+    assert out["predicted"] and "would refuse" in out["error"] and "$foo" in out["error"]
+    out = rehearse(WriteConn({}), doc(collMod="t_nope", validator=NEW_V))
+    assert "no collection named t_nope" in out["error"]
+    out = rehearse(WriteConn({}), doc(collMod="v_paid", validator=NEW_V))
+    assert "view" in out["error"]
+
+
+def test_a_view_is_predicted_by_running_its_pipeline():
+    seen = []
+
+    def run(command):
+        seen.append(command)
+        if any("$toInt" in json.dumps(s) for s in command["pipeline"]) and \
+                not command["pipeline"][0].get("$match", {}).get("_id"):
+            raise OperationFailure("Failed to parse number 'DRAFT'", 241)
+        return [{"n": 3}]
+    conn = WriteConn({"pipeline-run.json": run})
+    out = rehearse(conn, doc(create="v_int", viewOn="t_order",
+                             pipeline=[{"$project": {"n": {"$toInt": "$status"}}}]))
+    assert out["predicted"] and out["error"] is None and conn.statements == []
+    assert out["own_errors"] == [("v_int", "VIEW", f"fails over its first {write.PROBE} "
+                                  "documents: 241: Failed to parse number 'DRAFT'")]
+    assert seen[0]["aggregate"] == "t_order"
+    assert seen[0]["pipeline"][0] == {"$match": {"_id": {"$exists": False}}}   # parse only
+    assert out["verified"] is False and f"first {write.PROBE}" in out["blind"]
+
+    def parse_error(command):
+        raise OperationFailure("Unrecognized pipeline stage name: '$nope'", 40324)
+    out = rehearse(WriteConn({"pipeline-run.json": parse_error}),
+                   doc(create="v_bad", viewOn="t_order", pipeline=[{"$nope": {}}]))
+    assert "would refuse" in out["error"] and "$nope" in out["error"]
+    ok = lambda c: [{"n": 1}]          # noqa: E731
+    out = rehearse(WriteConn({"pipeline-run.json": ok}),
+                   doc(create="v_x", viewOn="t_gone", pipeline=[]))
+    assert out["own_errors"] == [("v_x", "VIEW", "reads what does not exist: t_gone")]
+    assert "exists" in rehearse(WriteConn({"pipeline-run.json": ok}),
+                                doc(create="v_paid", viewOn="t_order", pipeline=[]))["error"]
+    assert "exists" in rehearse(WriteConn({"pipeline-run.json": ok}),
+                                doc(create="t_order", viewOn="t_line", pipeline=[]))["error"]
+    assert "no view named" in rehearse(WriteConn({"pipeline-run.json": ok}),
+                                       doc(collMod="v_nope", viewOn="t", pipeline=[]))["error"]
+
+
+def test_a_view_change_runs_the_views_built_on_it():
+    def run(command):
+        if command["aggregate"] == "t_order" and {"$match": {"total": {"$gt": 15}}} in command["pipeline"] \
+                and {"$project": {"total": 0}} in command["pipeline"]:
+            raise OperationFailure("$gt needs a total", 2)
+        return [{"n": 1}]
+    conn = WriteConn({"pipeline-run.json": run})
+    out = rehearse(conn, doc(collMod="v_paid", viewOn="t_order",
+                             pipeline=[{"$match": {"status": "PAID"}}, {"$project": {"total": 0}}]))
+    assert out["broken"] == [("v_paid_big", "VIEW", f"fails over its first {write.PROBE} "
+                              "documents: 2: $gt needs a total")], out
+    composed = [c for n, c in conn.asked if n == "pipeline-run.json"][-1]["pipeline"]
+    assert composed[:3] == [{"$match": {"status": "PAID"}}, {"$project": {"total": 0}},
+                            {"$match": {"total": {"$gt": 15}}}], composed
+
+
+def test_a_unique_index_is_predicted_by_looking_for_duplicates():
+    conn = WriteConn({"indexes.json": [{"v": 2, "key": {"_id": 1}, "name": "_id_"}],
+                      "duplicates.json": [{"_id": {"ref": "A-1"}, "n": 2}]})
+    out = rehearse(conn, doc(createIndexes="t_order", indexes=[
+        {"key": {"ref": 1}, "name": "ux_ref", "unique": True,
+         "partialFilterExpression": {"status": "PAID"}}]))
+    assert out["predicted"] and "duplicate" in out["error"] and "A-1" in out["error"], out
+    asked = [c for n, c in conn.asked if n == "duplicates.json"][-1]
+    assert asked["pipeline"][0] == {"$match": {"status": "PAID"}}
+    assert asked["pipeline"][1]["$group"]["_id"] == {"ref": "$ref"}
+    conn = WriteConn({"indexes.json": [], "duplicates.json": []})
+    out = rehearse(conn, doc(createIndexes="t_order", indexes=[
+        {"key": {"ref": 1, "status": 1}, "name": "ux_rs", "unique": True, "sparse": True}]))
+    assert out["error"] is None and out["predicted"]
+    asked = [c for n, c in conn.asked if n == "duplicates.json"][-1]
+    assert asked["pipeline"][0] == {"$match": {"$or": [{"ref": {"$exists": True}},
+                                                      {"status": {"$exists": True}}]}}
+    conn = WriteConn({"indexes.json": [{"key": {"x": 1}, "name": "ix_ref"}]})
+    out = rehearse(conn, doc(createIndexes="t_order", indexes=[{"key": {"ref": 1}, "name": "ix_ref"}]))
+    assert "ix_ref" in out["error"] and "exists" in out["error"]
+    assert "duplicates.json" not in conn.names()
+    conn = WriteConn({"indexes.json": [{"key": {"ref": 1}, "name": "ix_ref"}]})
+    assert "no index named" in rehearse(conn, doc(dropIndexes="t_order", index="nope"))["error"]
+    assert rehearse(conn, doc(dropIndexes="t_order", index="ix_ref"))["error"] is None
+
+
+def test_a_drop_is_predicted_by_what_reads_it():
+    out = rehearse(WriteConn({}), doc(drop="t_order"))
+    assert out["predicted"] and ("v_order_lines", "VIEW", "reads what will not exist: t_order") \
+        in out["broken"], out
+    assert "no collection or view named" in rehearse(WriteConn({}), doc(drop="t_nope"))["error"]
+    assert rehearse(WriteConn({}), doc(create="t_new"))["error"] is None
+    assert "exists" in rehearse(WriteConn({}), doc(create="t_order"))["error"]
+
+
+class AutoReconnect(DriverError):
+    pass
+
+
+class WriteConcernError(OperationFailure):
+    pass
+
+
+def test_execute_runs_once_and_says_whether_it_landed():
+    stmt = write.prepare_statement(doc(drop="t_x"), "structural")
+    conn = WriteConn({}, reply={"ok": 1})
+    assert write.execute(conn, "app", "structural", stmt, None) == {}
+    assert conn.statements == [({"drop": "t_x"}, False)]
+
+    def refuse(c):
+        raise OperationFailure("E11000 duplicate key error", 11000)
+    assert write.execute(WriteConn({}, reply=refuse), "app", "structural", stmt, None) == \
+        {"error": "11000: E11000 duplicate key error"}
+
+    def drop(c):
+        raise AutoReconnect("connection reset by peer")
+    out = write.execute(WriteConn({}, reply=drop), "app", "structural", stmt, None)
+    assert out["escaped"] and "connection reset" in out["error"]
+
+    def concern(c):
+        raise WriteConcernError("waiting for replication timed out", 64)
+    assert write.execute(WriteConn({}, reply=concern), "app", "structural", stmt, None)["escaped"]
+    out = write.execute(WriteConn({}, reply={"ok": 1, "writeConcernError": {"code": 64, "errmsg": "w"}}),
+                        "app", "structural", stmt, None)
+    assert out["escaped"]
+
+
+def test_what_landed_is_read_back_against_the_prediction():
+    ident = {"type": "VALIDATOR", "name": "t_order", "schema": None}
+    stmt = write.prepare_statement(doc(collMod="t_order", validator=NEW_V), "source")
+    predicted = {"predicted": True, "broken": [("t_order", "COLLECTION", "x")], "own_errors": [],
+                 "prediction": {"failing": 2}}
+    after = dict(T_ORDER, options={"validator": NEW_V, "validationLevel": "strict",
+                                   "validationAction": "error"})
+    conn = WriteConn({"collection.json": listing(after, *ALL[2:]), "invalid.json": failing(3)})
+    found = write.verify_written(conn, "app", "source", stmt, ident, predicted)
+    assert found["differs"] == ["3 documents fail the validator now; the prediction said 2"]
+    assert len(found["broken"]) == 1
+    conn = WriteConn({"collection.json": listing(after, *ALL[2:]), "invalid.json": failing(2)})
+    assert write.verify_written(conn, "app", "source", stmt, ident, predicted)["differs"] == []
+    conn = WriteConn({"collection.json": listing(T_ORDER), "invalid.json": failing(2)})
+    assert "reads back" in write.verify_written(conn, "app", "source", stmt, ident,
+                                                predicted)["differs"][0]
+    istmt = write.prepare_statement(doc(createIndexes="t_order", indexes=[
+        {"key": {"ref": 1}, "name": "ix_ref"}]), "structural")
+    conn = WriteConn({"indexes.json": []})
+    assert "ix_ref" in write.verify_written(conn, "app", "structural", istmt, None,
+                                            {"predicted": True})["differs"][0]
+
+
+def test_rows_are_measured_and_fingerprinted():
+    conn = WriteConn({"probe.json": [{"_id": None, "n": 2, "h": "12345"}],
+                      "probe-sample.json": [{"_id": 1, "status": "DRAFT"}, {"_id": 2, "status": "DRAFT"}]})
+    got = write.measure_row_set(conn, "t_order", {"status": "DRAFT"})
+    assert (got["count"], got["hash"], got["columns"]) == (2, "12345", ["DOCUMENT"])
+    assert got["predicate"] == '{"status": "DRAFT"}' and got["truncated"] is False
+    assert json.loads(got["sample"][0][0]) == {"_id": 1, "status": "DRAFT"}
+    asked = [c for n, c in conn.asked if n == "probe.json"][-1]
+    assert asked["pipeline"][0] == {"$match": {"status": "DRAFT"}}
+    empty = WriteConn({"probe.json": [], "probe-sample.json": []})
+    assert write.measure_row_set(empty, "t_order", {"x": 1})["count"] == 0
+
+
+def test_a_user_that_can_do_far_more_is_named():
+    def power(*roles):
+        return write.privilege_warning(FakeConn({"connection-status.json": {"authInfo": {
+            "authenticatedUsers": [{"user": "app_agent", "db": "admin"}],
+            "authenticatedUserRoles": [{"role": r, "db": "admin"} for r in roles]}}}), "app")
+    assert "root" in power("root") and "app_agent" in power("root")
+    assert "dbOwner" in power("dbOwner", "read")
+    assert power("readWrite") is None
+
+
+def test_the_engine_answers_the_write_and_predict_tiers():
+    assert engine_problems(MongoEngine(), tiers=("connect", "read", "write", "predict")) == []
+    from pythia_core import policy
+    notes = MongoEngine.rollback_notes
+    assert set(notes) == set(policy.GROUPS) and all(notes.values())
+
+
 def main():
     failed = 0
     for name, fn in sorted(globals().items()):

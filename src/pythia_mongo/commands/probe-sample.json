@@ -1,0 +1,28 @@
+{
+  "purpose": "the first documents an UPDATE or DELETE filter matches, for the preview",
+  "binds": {
+    "n": "the collection",
+    "f": "the statement's own filter",
+    "k": "one more than are shown, so a cut is announced"
+  },
+  "returns": "aggregate cursor: the documents",
+  "command": {
+    "aggregate": {
+      "$bind": "n"
+    },
+    "pipeline": [
+      {
+        "$match": {
+          "$bind": "f"
+        }
+      },
+      {
+        "$limit": {
+          "$bind": "k"
+        }
+      }
+    ],
+    "cursor": {},
+    "maxTimeMS": 30000
+  }
+}

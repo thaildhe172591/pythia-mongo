@@ -6,6 +6,11 @@
    dropped and rebuilt from tests/fixtures/app_owner.json, a user
    pythia_agent is made (the `read` role on it), and every read command
    runs through the command line as that user.
+3. Then the fixture is loaded again, the user may write (readWrite and
+   dbAdmin), and every write path runs through the gate: a validator
+   predicted, approved, written and restored, and one whose prediction
+   moved; views; indexes, a unique one refused for its duplicates; data
+   rehearsed in a transaction, rows that move; a drop that breaks a view.
 
 Never point this at a shared server: it creates a user and drops a
 database. Skipped unless PYTHIA_MONGO_LIVE_HOST is set:
@@ -111,6 +116,34 @@ class Project:
         assert code == 0, (argv, why, out)
         return json.loads(out.strip().splitlines()[-1])
 
+    def file(self, name, value):
+        text = value if isinstance(value, str) else json.dumps(value, indent=2)
+        (self.root / name).write_text(text, encoding="utf-8")
+        return name
+
+    def preview(self, name, value):
+        return self.json("apply", self.file(name, value))
+
+    def approve(self, token):
+        """The developer's own act, at their own console."""
+        from pythia_core import human
+        human.FORCE_CONSOLE = True
+        try:
+            code, _, why = self.run("approve", token)
+            assert code == 0, why
+        finally:
+            human.FORCE_CONSOLE = False
+
+    def confirm(self, *argv):
+        """(exit code, the last JSON line or None, the refusal)"""
+        code, out, why = self.run(*argv, "--json")
+        lines = out.strip().splitlines()
+        return code, (json.loads(lines[-1]) if lines and lines[-1].startswith("{")
+                      else None), why
+
+    def policy(self, **groups):
+        (self.state / "policy.json").write_text(json.dumps(groups), encoding="utf-8")
+
 
 def check_connect(entry):
     p = Project(dict(entry, database="admin"))
@@ -205,6 +238,177 @@ def ddl_round_trip(entry, p):
     ok("ddl round trip: drop, run the rebuilt commands, rebuild — identical")
 
 
+def options(entry, name):
+    with admin(entry) as client:
+        found = list(client[DB].list_collections(filter={"name": name}))
+        return found[0]["options"] if found else None
+
+
+def indexes(entry, name):
+    with admin(entry) as client:
+        return [ix["name"] for ix in client[DB][name].list_indexes()]
+
+
+def check_writes(entry):
+    from pythia_core import human
+    human.FORCE_CONSOLE = False             # no person here unless one approves
+    agent = load_fixture(entry)
+    with admin(entry) as client:
+        client[DB].command("grantRolesToUser", AGENT, roles=[
+            {"role": "readWrite", "db": DB}, {"role": "dbAdmin", "db": DB}])
+    p = Project(agent)
+    try:
+        _validators(entry, p)
+        _views(entry, p)
+        _indexes(entry, p)
+        _data(entry, p)
+        _drop(entry, p)
+    finally:
+        human.FORCE_CONSOLE = None
+
+
+STRICTER = {"collMod": "t_order", "validator": {"$jsonSchema": {
+    "bsonType": "object", "required": ["status", "total", "ref"],
+    "properties": {"status": {"enum": ["DRAFT", "PAID"]}}}}}
+
+
+def _validators(entry, p):
+    original = options(entry, "t_order")["validator"]
+    doc = p.preview("stricter.json", STRICTER)
+    reh = doc["rehearsal"]
+    assert reh["predicted"] is True and doc["object"] == "t_order", doc
+    assert reh["broken"] == [["t_order", "COLLECTION", "1 document fails the new validator "
+                              "(strict, error) — first _id: 3"]], reh
+    assert options(entry, "t_order")["validator"] == original     # nothing ran
+    code, out, _ = p.run("apply", "stricter.json")
+    assert "predicted — nothing ran" in out and "ran and rolled back" not in out, out
+    ok("a validator change is predicted — nothing runs, the documents it would "
+       "reject are counted")
+
+    p.approve(doc["token"])
+    with admin(entry) as client:          # a document arrives that the new one rejects
+        client[DB]["t_order"].insert_one({"_id": 4, "status": "DRAFT", "total": 1})
+    code, _, why = p.confirm("apply", "stricter.json", "--confirm", doc["token"])
+    assert code == 1 and "prediction moved" in why, why
+    assert options(entry, "t_order")["validator"] == original
+    ok("a prediction that moved after approval writes nothing")
+
+    doc = p.preview("stricter.json", STRICTER)
+    p.approve(doc["token"])
+    code, res, why = p.confirm("apply", "stricter.json", "--confirm", doc["token"])
+    assert code == 3 and res["predicted"] and res["differs"] == [], (code, why, res)
+    assert [b[0] for b in res["broken"]] == ["t_order"], res
+    assert options(entry, "t_order")["validator"] == STRICTER["validator"]
+    ok("approved, written once, read back: the breakage the developer saw lands, exit 3")
+
+    eid = res["restore"].split()[-1]
+    doc = p.json("journal", "restore", eid)
+    assert doc["rehearsal"]["predicted"] is True, doc
+    p.approve(doc["token"])
+    code, res, why = p.confirm("journal", "restore", eid, "--confirm", doc["token"])
+    assert code == 0 and res["differs"] == [], (code, why, res)
+    assert options(entry, "t_order")["validator"] == original
+    with admin(entry) as client:
+        client[DB]["t_order"].delete_one({"_id": 4})
+    ok("journal restore: the old validator, predicted, approved and put back")
+
+
+def _views(entry, p):
+    view = {"create": "v_total_int", "viewOn": "t_order",
+            "pipeline": [{"$project": {"n": {"$toInt": "$status"}}}]}
+    doc = p.preview("view.json", view)
+    reh = doc["rehearsal"]
+    assert reh["predicted"] and reh["own_errors"][0][0] == "v_total_int", reh
+    assert "fails over its first 100 documents" in reh["own_errors"][0][2], reh
+    assert reh["verified"] is False and options(entry, "v_total_int") is None
+    p.approve(doc["token"])
+    code, res, why = p.confirm("apply", "view.json", "--confirm", doc["token"])
+    assert code == 3 and options(entry, "v_total_int")["viewOn"] == "t_order", (code, why, res)
+    ok("a view is predicted by running its pipeline; an approved failure lands, exit 3")
+
+    p.policy(structural="confirm")
+    eid = res["restore"].split()[-1]
+    doc = p.json("journal", "restore", eid)
+    p.approve(doc["token"])
+    code, res, why = p.confirm("journal", "restore", eid, "--confirm", doc["token"])
+    assert code == 0 and options(entry, "v_total_int") is None, (code, why, res)
+    ok("a new view's undo is a drop, approved like any write")
+
+    code, _, why = p.run("apply", p.file("bad.json", {"create": "v_bad", "viewOn": "t_order",
+                                                      "pipeline": [{"$nope": {}}]}))
+    assert code == 1 and "Prediction failed" in why and "$nope" in why, why
+    code, _, why = p.run("apply", p.file("out.json", {"create": "v_out", "viewOn": "t_order",
+                                                      "pipeline": [{"$out": "t_copy"}]}))
+    assert code == 1 and "$out" in why and options(entry, "t_copy") is None, why
+    ok("a pipeline MongoDB would refuse, or one that writes, has nothing to approve")
+
+
+def _indexes(entry, p):
+    code, _, why = p.run("apply", p.file("ux.json", {"createIndexes": "t_order", "indexes": [
+        {"key": {"status": 1}, "name": "ux_status", "unique": True}]}))
+    assert code == 1 and "duplicate" in why and "PAID" in why, why
+    assert "ux_status" not in indexes(entry, "t_order")
+    ok("a unique index that would meet duplicates is refused by its prediction")
+
+    doc = p.preview("ix.json", {"createIndexes": "t_order", "indexes": [
+        {"key": {"total": -1}, "name": "ix_order_total"}]})
+    assert doc["rehearsal"]["predicted"] and "ix_order_total" not in indexes(entry, "t_order")
+    p.approve(doc["token"])
+    code, res, why = p.confirm("apply", "ix.json", "--confirm", doc["token"])
+    assert code == 0 and res["differs"] == [], (code, why, res)
+    assert "ix_order_total" in indexes(entry, "t_order")
+    doc = p.preview("dx.json", {"dropIndexes": "t_order", "index": "ix_order_total"})
+    assert "scan" in doc["destructive"], doc
+    p.approve(doc["token"])
+    code, res, why = p.confirm("apply", "dx.json", "--confirm", doc["token"])
+    assert code == 0 and "ix_order_total" not in indexes(entry, "t_order"), (code, why, res)
+    ok("an index is predicted, built once and read back; dropping one says what it costs")
+
+
+def _data(entry, p):
+    p.policy(structural="confirm", data_dml="confirm")
+    raise_draft = {"update": "t_order", "updates": [
+        {"q": {"status": "DRAFT"}, "u": {"$inc": {"total": 1}}, "multi": True}]}
+    doc = p.preview("raise.json", raise_draft)
+    assert doc["rehearsal"]["predicted"] is False and doc["rehearsal"]["rows"] == 1, doc
+    assert doc["row_set"]["count"] == 1 and '"DRAFT"' in doc["row_set"]["predicate"], doc
+    with admin(entry) as client:
+        total = client[DB]["t_order"].find_one({"_id": 1})["total"]
+    assert total == 10                                       # rolled back
+    p.approve(doc["token"])
+    with admin(entry) as client:          # the row moves after approval
+        client[DB]["t_order"].update_one({"_id": 1}, {"$set": {"total": 11}})
+    code, _, why = p.confirm("apply", "raise.json", "--confirm", doc["token"])
+    assert code == 1, why
+    doc = p.preview("raise.json", raise_draft)
+    p.approve(doc["token"])
+    code, res, why = p.confirm("apply", "raise.json", "--confirm", doc["token"])
+    assert code == 0 and res["rows"] == 1, (code, why, res)
+    with admin(entry) as client:
+        assert client[DB]["t_order"].find_one({"_id": 1})["total"] == 12
+    ok("data is rehearsed in a transaction: approved on its documents, refused when "
+       "they move, then written")
+
+    code, _, why = p.run("apply", p.file("bad.json", {"insert": "t_order",
+                                                      "documents": [{"_id": 9, "status": "DRAFT"}]}))
+    assert code == 1 and "121" in why and "Rehearsal failed" in why, why
+    with admin(entry) as client:
+        assert client[DB]["t_order"].find_one({"_id": 9}) is None
+    ok("a document the validator rejects fails its rehearsal: nothing to approve")
+
+
+def _drop(entry, p):
+    doc = p.preview("drop.json", {"drop": "t_order_line"})
+    assert doc["destructive"] and ["v_order_lines", "VIEW",
+                                   "reads what will not exist: t_order_line"] in \
+        doc["rehearsal"]["broken"], doc
+    assert options(entry, "t_order_line") is not None
+    p.approve(doc["token"])
+    code, res, why = p.confirm("apply", "drop.json", "--confirm", doc["token"])
+    assert code == 3 and options(entry, "t_order_line") is None, (code, why, res)
+    ok("a drop names the views it breaks, and lands as written-but-broken when approved")
+
+
 def main():
     env = os.environ
     if not env.get("PYTHIA_MONGO_LIVE_HOST"):
@@ -219,6 +423,7 @@ def main():
     agent = load_fixture(entry)
     p = check_reads(agent)
     ddl_round_trip(entry, p)
+    check_writes(entry)
     print("OK")
 
 

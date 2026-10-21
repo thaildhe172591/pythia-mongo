@@ -1,0 +1,8 @@
+{
+  "purpose": "who this connection is, and the roles it holds, for the privilege warning",
+  "binds": {},
+  "returns": "connectionStatus: authInfo (authenticatedUsers, authenticatedUserRoles)",
+  "command": {
+    "connectionStatus": 1
+  }
+}

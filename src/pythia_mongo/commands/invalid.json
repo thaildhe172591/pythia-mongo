@@ -39,6 +39,7 @@
         }
       }
     ],
-    "cursor": {}
+    "cursor": {},
+    "maxTimeMS": 30000
   }
 }

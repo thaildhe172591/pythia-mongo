@@ -1,0 +1,37 @@
+{
+  "purpose": "how many documents an UPDATE or DELETE filter matches, and an order-independent fingerprint of them (any document joining, leaving or changing moves it)",
+  "binds": {
+    "n": "the collection",
+    "f": "the statement's own filter"
+  },
+  "returns": "aggregate cursor: one document {n, h}, or none when nothing matches",
+  "command": {
+    "aggregate": {
+      "$bind": "n"
+    },
+    "pipeline": [
+      {
+        "$match": {
+          "$bind": "f"
+        }
+      },
+      {
+        "$group": {
+          "_id": null,
+          "n": {
+            "$sum": 1
+          },
+          "h": {
+            "$sum": {
+              "$toDecimal": {
+                "$toHashedIndexKey": "$$ROOT"
+              }
+            }
+          }
+        }
+      }
+    ],
+    "cursor": {},
+    "maxTimeMS": 30000
+  }
+}

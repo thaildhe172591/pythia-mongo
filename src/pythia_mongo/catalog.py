@@ -24,9 +24,15 @@ COMMAND_BINDS = {
     "count.json": {"n"},
     "invalid.json": {"n", "v"},
     "view-run.json": {"n", "k"},
+    "probe.json": {"n", "f"},
+    "probe-sample.json": {"n", "f", "k"},
+    "duplicates.json": {"n", "f", "g"},
+    "pipeline-run.json": {"n", "p"},
+    "connection-status.json": set(),
 }
 
-# the commands a read runs: never a write, a $out or a $merge (the suite checks)
+# every command file reads: never a write, a $out or a $merge (the suite
+# checks). A statement's own command is not a file: it is the developer's.
 READ_COMMANDS = frozenset(COMMAND_BINDS)
 
 # commands whose answer is a cursor to read to the end
@@ -104,3 +110,15 @@ def ejson(value, indent=2):
         return json.dumps(value, indent=indent, default=str, ensure_ascii=False)
     return json_util.dumps(value, json_options=json_util.RELAXED_JSON_OPTIONS,
                            indent=indent, ensure_ascii=False)
+
+
+def to_bson(value):
+    """A value parsed from a statement as plain JSON, with its Extended JSON
+    forms ({"$oid": ...}, {"$date": ...}) turned into BSON types, as the
+    server must receive them."""
+    try:
+        from bson import json_util
+    except ImportError:                       # the suite runs without the driver
+        return value
+    return json_util.loads(json.dumps(value))
+

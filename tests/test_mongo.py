@@ -509,6 +509,22 @@ def test_check_end_to_end():
     assert e.current_schema(conn) == "app"
 
 
+def test_check_warns_below_mongodb_7_and_refuses_nothing():
+    e = MongoEngine()
+
+    def build(version, array=None):
+        answer = {"version": version, "ok": 1}
+        if array:
+            answer["versionArray"] = array
+        return FakeConn({"server-build.json": answer})
+    old = e.floor_warning(build("6.0.20", [6, 0, 20, 0]))
+    assert old.startswith("MongoDB 6.0 is below pythia-mongo's floor, 7.0"), old
+    assert "CI runs 7.0 and 8.0" in old
+    assert e.floor_warning(build("5.0.31")).startswith("MongoDB 5.0 is below")   # no array
+    assert e.floor_warning(build("7.0.45", [7, 0, 45, 0])) is None
+    assert e.floor_warning(build("8.0.13", [8, 0, 13, 0])) is None
+
+
 def test_another_tools_config_is_not_ours():
     with tempfile.TemporaryDirectory() as td:
         root = pathlib.Path(td)
@@ -1188,7 +1204,8 @@ def test_the_release_workflow_checks_the_tag_against_the_version():
 
 def test_it_asks_for_the_core_of_its_release_series():
     # 0.x: a minor version of pythia-core may change the engine contract
-    assert '"pythia-core>=0.1.0,<0.2"' in pyproject()
+    assert re.search(r'"pythia-core>=0\.1\.\d+,<0\.2"', pyproject()), \
+        "pythia-core is asked for outside its 0.1 series"
 
 
 def readme_shape(text):

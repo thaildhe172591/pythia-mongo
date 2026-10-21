@@ -1,6 +1,6 @@
 # Working in this repository / with this tool
 
-pythia-mongo is pythia for MongoDB, on pythia-core. It is alpha (0.1.0): it
+pythia-mongo is pythia for MongoDB, on pythia-core. It is alpha (0.1.1): it
 reads everything pythia's Learn movement needs, and writes through one
 gate. `pythia-mongo install` wires a project: the guard, the session brief
 and the `pythia-mongo-*` skills (`using-pythia-mongo` routes).
@@ -86,7 +86,8 @@ and the `pythia-mongo-*` skills (`using-pythia-mongo` routes).
   `{"$bind": "name"}` value declared in the file and in `COMMAND_BINDS`. No
   JavaScript anywhere; no write, `$out` or `$merge` in any command file —
   the only write sent is the developer's own document. A prediction is
-  bounded by `maxTimeMS`. MongoDB 7.0 is the floor.
+  bounded by `maxTimeMS`. MongoDB 7.0 is the floor: CI runs the live check
+  on 7.0 and 8.0, and `check` warns below it.
 - **Dependencies:** pythia-core and pymongo, nothing else (a test enforces
   it).
 - **Engine-neutral logic goes to pythia-core.** If an answer would be the

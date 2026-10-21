@@ -11,7 +11,7 @@ trên SQL Server: agent học từ database đang chạy, hỏi một người t
 lần ghi, và chỉ ghi qua một cổng có snapshot, có kiểm chứng và báo cáo trung
 thực.
 
-**Alpha (0.1.0).** Nó đọc được mọi thứ mà nhịp Học của pythia cần, ghi qua
+**Alpha (0.1.1).** Nó đọc được mọi thứ mà nhịp Học của pythia cần, ghi qua
 một cổng duy nhất — dữ liệu được rehearse trong một transaction; validator,
 view và index được dự đoán, ghi đúng một lần rồi đọc lại — và chuẩn bị một
 project cho agent: guard, bản tóm tắt đầu phiên, các cánh cửa duyệt và các
@@ -23,7 +23,8 @@ skill `pythia-mongo-*`.
 | ghi: `apply`, `deploy`, `approve`, `journal`, `history`, `policy`, `autopilot`, `lint` |
 | harness: `install`, `doctor`, `hook`, `mcp`, `skill lint` |
 
-Đã test trên MongoDB 7.0 và 8.0; 7.0 là phiên bản thấp nhất.
+Đã test trên MongoDB 7.0 và 8.0, mỗi bản qua toàn bộ live check; 7.0 là
+phiên bản tối thiểu, và thấp hơn thì `check` nói rõ (không gì bị từ chối).
 
 ## Cài đặt
 

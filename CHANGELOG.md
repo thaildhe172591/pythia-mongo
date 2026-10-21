@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1 — unreleased
+
+Phase 8 of the plan in pythia-core's DESIGN.md: the minimum version, on
+pythia-core 0.1.1.
+
+- **Below MongoDB 7.0 `check` says so** — from `buildInfo`'s
+  `versionArray` — and nothing is refused. 7.0 was the floor since 0.1.0;
+  CI runs the whole live check on 7.0 and 8.0.
+- Asks for `pythia-core>=0.1.1,<0.2`.
+
 ## 0.1.0 — 2026-10-21
 
 The first release, and the first on PyPI: alpha, on pythia-core 0.1.0.

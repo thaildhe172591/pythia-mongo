@@ -152,7 +152,8 @@ def check_connect(entry):
     doc = p.json("check")
     server = {r["ITEM"]: r["VALUE"] for r in doc["rows"]}["server"]
     assert server.startswith("MongoDB ") and "database admin" in server, server
-    ok(f"check: {server}")
+    assert doc["below_floor"] is None, doc["below_floor"]    # CI runs 7.0 and 8.0
+    ok(f"check: {server}, at or above the floor")
     return server
 
 

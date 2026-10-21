@@ -11,7 +11,7 @@ on SQL Server: the agent learns from the live database, asks a person before
 any write, and writes only through a gate that snapshots, verifies and
 reports honestly.
 
-**Alpha (0.1.0).** It reads everything pythia's Learn movement needs, writes through one gate — data rehearsed in a transaction;
+**Alpha (0.1.1).** It reads everything pythia's Learn movement needs, writes through one gate — data rehearsed in a transaction;
 validators, views and indexes predicted, written once, and read back — and
 wires a project for an agent: the guard, the session brief, the approval
 doors and the `pythia-mongo-*` skills.
@@ -22,7 +22,8 @@ doors and the `pythia-mongo-*` skills.
 | writes: `apply`, `deploy`, `approve`, `journal`, `history`, `policy`, `autopilot`, `lint` |
 | the harness: `install`, `doctor`, `hook`, `mcp`, `skill lint` |
 
-MongoDB 7.0 and 8.0 are tested; 7.0 is the floor.
+MongoDB 7.0 and 8.0 are tested, each through the whole live check; 7.0
+is the floor, and below it `check` says so (nothing is refused).
 
 ## Install
 

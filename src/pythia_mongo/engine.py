@@ -16,6 +16,8 @@ from .catalog import run
 # reads a transaction may hold; listCollections and listIndexes it may not
 IN_TRANSACTION = ("aggregate", "find")
 
+FLOOR = (7, 0)          # MongoDB 7.0: the oldest CI tests, and the oldest still supported
+
 CONFIG_REL = ".pythia/mongo/connections.json"
 REQUIRED = ("host", "database")
 
@@ -192,6 +194,19 @@ class MongoEngine:
         else:
             role = "standalone"
         return f"MongoDB {version} ({role}) — database {conn.db.name}"
+
+    def floor_warning(self, conn):
+        """Below MongoDB 7.0, the oldest version CI tests: said by `check`,
+        never refused (pythia-core DESIGN.md §8, question 2)."""
+        build = run(conn, "server-build.json")
+        array = build.get("versionArray") or [
+            int(p) for p in str(build.get("version", "0.0")).split(".")[:2] if p.isdigit()]
+        major_minor = tuple((list(array) + [0, 0])[:2])
+        if major_minor >= FLOOR:
+            return None
+        return (f"MongoDB {major_minor[0]}.{major_minor[1]} is below pythia-mongo's "
+                "floor, 7.0: it is not tested there (CI runs 7.0 and 8.0), and "
+                "MongoDB no longer supports it. Most commands may still work.")
 
     def current_schema(self, conn):
         # no search path: every name lands in the database the connection names

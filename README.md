@@ -1,5 +1,7 @@
 # pythia-mongo
 
+**English** · [Tiếng Việt](https://github.com/thaildhe172591/pythia-mongo/blob/main/README.vi.md)
+
 pythia for MongoDB: database development for AI agents, built on
 [pythia-core](https://github.com/thaildhe172591/pythia-core). It aims to do
 what [pythia](https://github.com/thaildhe172591/pythia) does on Oracle,
@@ -9,8 +11,7 @@ on SQL Server: the agent learns from the live database, asks a person before
 any write, and writes only through a gate that snapshots, verifies and
 reports honestly.
 
-**Pre-alpha (Phase 5c).** It reads everything pythia's Learn movement
-needs, writes through one gate — data rehearsed in a transaction;
+**Alpha (0.1.0).** It reads everything pythia's Learn movement needs, writes through one gate — data rehearsed in a transaction;
 validators, views and indexes predicted, written once, and read back — and
 wires a project for an agent: the guard, the session brief, the approval
 doors and the `pythia-mongo-*` skills.
@@ -23,15 +24,20 @@ doors and the `pythia-mongo-*` skills.
 
 MongoDB 7.0 and 8.0 are tested; 7.0 is the floor.
 
-## Install (from git while pre-alpha)
+## Install
+
+```bash
+pip install pythia-mongo
+```
+
+That brings pythia-core, and [pymongo](https://pypi.org/project/pymongo/),
+the only driver it uses. The development version is the main branch of
+both:
 
 ```bash
 pip install "git+https://github.com/thaildhe172591/pythia-core" \
             "git+https://github.com/thaildhe172591/pythia-mongo"
 ```
-
-That brings [pymongo](https://pypi.org/project/pymongo/), the only driver
-it uses.
 
 ## Set up a project for an agent
 
@@ -82,11 +88,16 @@ list. It sees the commands Claude Code hands its tools, not Compass or a
 driver inside the application. The gate behind it holds either way
 (pythia-core's SECURITY.md).
 
+pythia-postgres and pythia-mssql install beside it in one project, and
+pythia for Oracle too: each keeps the others' hooks and instruction blocks,
+and each guard and approval hook acts for its own tool only (pythia-core's
+CI checks it with all four installed).
+
 ## Connections
 
 `.pythia/mongo/connections.json` in the project root, owner-readable only
 (`chmod 600`), and out of git. Template:
-[examples/connections.example.json](examples/connections.example.json).
+[examples/connections.example.json](https://github.com/thaildhe172591/pythia-mongo/blob/main/examples/connections.example.json).
 
 ```json
 {

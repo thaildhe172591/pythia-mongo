@@ -55,7 +55,11 @@ jobs:
             -v /tmp/mongo-key:/key "mongo:${{ matrix.mongo }}" \
             --replSet rs0 --keyFile /key/keyfile --bind_ip_all
           mongo() { docker exec mongo mongosh --quiet -u root -p CiOnly-Disposable1 --eval "$1"; }
-          for i in $(seq 1 60); do mongo 'db.runCommand({ping: 1}).ok' && break; sleep 2; done
+          running() { [ "$(docker inspect -f '{{.State.Running}}' mongo)" = true ]; }
+          for i in $(seq 1 60); do
+            running || { echo "mongod exited"; exit 1; }   # its log is the next step
+            mongo 'db.runCommand({ping: 1}).ok' && break; sleep 2
+          done
           mongo 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "127.0.0.1:27017"}]}).ok'
           for i in $(seq 1 30); do mongo 'db.hello().isWritablePrimary' | grep -q true && break; sleep 2; done
           mongo 'db.hello().isWritablePrimary' | grep -q true
@@ -68,6 +72,9 @@ jobs:
           PYTHIA_MONGO_LIVE_PASSWORD: CiOnly-Disposable1
           PYTHIA_MONGO_LIVE_DISPOSABLE: "1"
           PYTHIA_MONGO_LIVE_DIRECT: "1"
+      - name: the server's log
+        if: failure()
+        run: docker logs mongo 2>&1 | tail -n 200
 
   package:
     runs-on: ubuntu-latest

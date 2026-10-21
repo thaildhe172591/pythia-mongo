@@ -9,13 +9,17 @@ on SQL Server: the agent learns from the live database, asks a person before
 any write, and writes only through a gate that snapshots, verifies and
 reports honestly.
 
-**Pre-alpha (Phase 5b).** It reads everything pythia's Learn movement
-needs, and writes through one gate: data rehearsed in a transaction;
-validators, views and indexes predicted, written once, and read back.
+**Pre-alpha (Phase 5c).** It reads everything pythia's Learn movement
+needs, writes through one gate — data rehearsed in a transaction;
+validators, views and indexes predicted, written once, and read back — and
+wires a project for an agent: the guard, the session brief, the approval
+doors and the `pythia-mongo-*` skills.
 
-| Works today | Next |
-|---|---|
-| `check`, `ls`, `src`, `cols`, `ddl`, `grep`, `deps`, `impact`, `errors`, `connections`; `apply`, `approve`, `journal`, `history`, `policy` | the harness — guard, `install`, `doctor`, the chat doors and skills — with autopilot and lint (5c) |
+| Works today |
+|---|
+| reads: `check`, `ls`, `src`, `cols`, `ddl`, `grep`, `deps`, `impact`, `errors`, `connections` |
+| writes: `apply`, `deploy`, `approve`, `journal`, `history`, `policy`, `autopilot`, `lint` |
+| the harness: `install`, `doctor`, `hook`, `mcp`, `skill lint` |
 
 MongoDB 7.0 and 8.0 are tested; 7.0 is the floor.
 
@@ -28,6 +32,55 @@ pip install "git+https://github.com/thaildhe172591/pythia-core" \
 
 That brings [pymongo](https://pypi.org/project/pymongo/), the only driver
 it uses.
+
+## Set up a project for an agent
+
+```bash
+cd your-project
+pythia-mongo install     # once; a second run changes nothing
+pythia-mongo doctor      # is everything wired? exit 1 names what is not
+```
+
+`install` writes, and leaves everything else as it was:
+
+- `.pythia/mongo/connections.json`, mode 600, created once from the
+  template — the developer fills in the passwords; an agent never opens it;
+- `.gitignore` lines for that file, this machine's approvals
+  (`.pythia/mongo/grants/`) and `.claude/settings.local.json`;
+- `.claude/settings.local.json`: the hooks (the guard, the session brief,
+  the AskUserQuestion answer), spelled with this interpreter's absolute path
+  so they start whether or not a virtual environment is active, and deny
+  rules for the engine's files;
+- the MCP approver `pythia_mongo` (tool `pythia_mongo_approve`), in this
+  machine's files only: Claude Code's local scope for the project
+  (`~/.claude.json`) and Codex's `~/.codex/config.toml`, each when that
+  client has run here;
+- a `pythia-mongo` block in CLAUDE.md and AGENTS.md (other tools' blocks,
+  and the developer's own text, are left alone);
+- the skills, in `.claude/skills` and `.agents/skills`:
+  `using-pythia-mongo` (the router), `pythia-mongo-explore`,
+  `pythia-mongo-impact`, `pythia-mongo-apply`, `pythia-mongo-deploy`,
+  `pythia-mongo-autopilot`, `pythia-mongo-verify`.
+
+Restart the agent's session after installing, so the hooks load. Each
+session then starts with the rules and a `STATE` line (connections, the
+write policy). Before every tool call the guard decides:
+
+| The agent runs | The guard |
+|---|---|
+| `mongosh` or the legacy `mongo` given a write (`insertOne`, `updateMany`, `deleteMany`, `replaceOne`, `drop`, `createIndex`, `createView`, `renameCollection`, `bulkWrite`, `runCommand`, `adminCommand`, `createUser`, a `$out` or `$merge` stage, `load()`), or a script (`-f`, `--file`, a `.js` or `.mjs` file, `< file`, a pipe into the shell); `mongoimport`, `mongorestore`, `mongofiles` — also behind `docker exec`, `ssh`, `sudo` or `bash -c` | denies: writes go through `pythia-mongo apply` |
+| a MongoDB MCP server's tool named for a write (`insert-many`, `update-many`, `delete-many`, `drop-collection`, `create-index`, `rename-collection`, ...), or given a command document that writes (`{"drop": ...}`, `{"collMod": ...}`, a `$merge` or `$out` stage) | denies |
+| reading `connections.json`; editing `policy.json`, the journal or a grant; setting `PYTHIA_MONGO_CI`; calling `grants.mint` from a one-liner | denies |
+| a `pythia-mongo` read, a preview, `approve --card` | allows without a prompt |
+| `apply --confirm <token>` the developer already approved on this connection | allows; apply re-verifies it |
+| `mongosh` reads, `mongodump`, `mongoexport`, `approve`, `--yes`, `policy set`, anything compound | stays out: the client asks |
+
+The guard reads a command for what it names, not what it means: it can
+deny a harmless command (a `find` that mentions `.drop(` in a string, or a
+`runCommand` that only reads) and miss a write spelled in a way it does not
+list. It sees the commands Claude Code hands its tools, not Compass or a
+driver inside the application. The gate behind it holds either way
+(pythia-core's SECURITY.md).
 
 ## Connections
 
@@ -117,9 +170,20 @@ pythia-mongo journal restore <entry>             # undo is a write too: preview,
 pythia-mongo policy                              # which groups may be written, and is rollback real?
 ```
 
-Until the harness arrives (5c), the developer approves in their own
-terminal: there is no hook to read a chat answer and no MCP approver yet,
-so the preview names no other door.
+The developer approves through the first door that works:
+
+1. **In Claude Code's chat.** The agent asks with AskUserQuestion, its text
+   exactly the output of `pythia-mongo approve --card <token>`, options
+   Approve / Reject. The answer hook records the approval only when the
+   question carried that card and the developer chose Approve themselves —
+   not an answer the agent wrote, not a dialog that closed unattended.
+2. **Through the MCP approver** (`pythia_mongo_approve`; Codex starts
+   here): the client shows the card, and only an explicit Approve counts.
+3. **At the developer's console:** `pythia-mongo approve <token>`.
+
+`pythia-mongo doctor` warns about settings that would answer the chat door
+for the developer (`dontAsk` mode, an allow rule for AskUserQuestion, a hook
+matching every tool).
 
 A file holds **one command document**, in Extended JSON — the document
 MongoDB itself takes, not mongosh JavaScript:
@@ -175,6 +239,83 @@ before approval: it must never write), reads (`aggregate`, `find`),
 `renameCollection`, `dropDatabase`, `bypassDocumentValidation`, session and
 transaction fields (`lsid`, `writeConcern`, ...), and `system.` collections.
 
+### A release: `deploy`, one transaction
+
+```bash
+pythia-mongo deploy 01_fix.json 02_backfill.json                     # preview the release as one transaction
+pythia-mongo deploy 01_fix.json 02_backfill.json --confirm 9c41e0b2aa  # all of it, as approved, or none
+```
+
+A release is data: one or more files, each one command document or a JSON
+array of them, in the order they run. It is rehearsed in one transaction —
+each command in order, its documents counted and fingerprinted at its own
+point (an update of a document the release inserts sees it), then
+everything is aborted. One card shows every command, and one approval (a
+10-digit token, through the same doors) covers the release; a single
+command's token cannot be approved alone. The confirm checks that every
+command is byte-identical to what was approved before anything runs,
+re-runs the release in one transaction, and commits only if every command
+still matches. A command that fails, or documents that moved, abort the
+whole release. A commit that does not answer is reported `WRITTEN?` for the
+whole release.
+
+A validator, a view, an index or a new or dropped collection has no place in
+a release: MongoDB runs them outside any transaction, so they are predicted,
+not rehearsed, and could not land all or nothing. `deploy` refuses them
+before anything is written; apply each on its own. Anything `apply` refuses
+is refused here too.
+
+### Lint: before any apply
+
+```bash
+pythia-mongo lint 01_fix.json 02_view.json   # a change's files in one run
+pythia-mongo lint --rules                    # every rule and its effective severity
+```
+
+The rules read what MongoDB accepts and a reviewer would not:
+
+| Rule | Default | Why |
+|---|---|---|
+| `mongo-validation-warn` | warn | `validationAction: "warn"` writes every document that breaks the validator anyway, and only logs it |
+| `mongo-validation-off` | warn | `validationLevel: "off"` keeps the validator and enforces nothing |
+| `mongo-validator-required` | info | a `$jsonSchema` with no `required` list accepts a document that holds none of its fields |
+| `mongo-collection-validator` | warn | a new collection gets its validator in the same change (a `collMod` of it that sets one counts) |
+| `mongo-unique-optional` | warn | a unique index counts every document without the field as `null`, and refuses the second — make it partial (`$exists`) or sparse |
+| `mongo-ttl` | warn | a TTL index deletes documents on the server's schedule, unasked and unjournaled |
+| `mongo-update-replacement` | warn | an update whose `u` holds no operator replaces each document, removing every field it does not name |
+
+What MongoDB refuses itself is left to the rehearsal or the prediction. The
+team sets severities and naming patterns (a view's name, `VIEW`; a
+validator's collection, `VALIDATOR`) in `.pythia/mongo/lint.json`:
+
+```json
+{"severity": {"mongo-validation-warn": "error", "naming": "error"},
+ "naming": {"VIEW": "^v_[a-z0-9_]+$"}}
+```
+
+Every preview shows the findings, a command's errors are on its card, and
+autopilot never lands a lint error.
+
+### Autopilot: one lease instead of every approval
+
+```bash
+pythia-mongo autopilot request --groups source --hours 2 --max-writes 30
+pythia-mongo autopilot report      # every write under the lease, with its restore
+pythia-mongo autopilot off         # anyone may revoke
+```
+
+When the developer wants the agent to work without approving each write,
+the agent requests a lease. Its card names the connection, the groups, the
+time, the number of writes and whether destructive commands are included,
+and nothing is delegated until the developer approves it through a door (or
+runs `pythia-mongo autopilot on` at a console). While it lasts, `apply` and
+`deploy` land what it covers without `--confirm` — still snapshotted,
+rehearsed or predicted, read back and journaled. It never covers another
+connection, one marked `"protected": true` (or an `"env"` of prod /
+production / prd / live), a group or destructive command the card did not
+name, or more than 1000 documents; a write that breaks something, lands
+unlike its prediction or is `WRITTEN?`, or five failures in a row pause it.
+
 ### Least privilege
 
 The read commands need the `read` role on the database. Writing needs
@@ -205,9 +346,10 @@ python tests/live_check.py    # a disposable server only (see its docstring)
 ```
 
 CI runs the suite on Ubuntu, Windows and macOS, Python 3.9 and 3.13, and
-the live check — every read, and every write path — against MongoDB 7.0
-and 8.0, each a single-node replica set with authentication. It tests against the pythia-core branch of the same
-name when one exists.
+the live check — every read, every write path, a release, a lint finding
+in a real preview and a write under a lease — against MongoDB 7.0 and 8.0,
+each a single-node replica set with authentication. It tests against the
+pythia-core branch of the same name when one exists.
 
 ## License
 

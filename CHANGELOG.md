@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.3.0.dev0 — unreleased
+
+Phase 5c of the plan in pythia-core's DESIGN.md: the harness, release and
+lint tiers, and the skill pack, on pythia-core 0.12.0.dev0. Phase 5 is
+complete.
+
+- **The guard (`guard.py`):** `mongosh` and the legacy `mongo` given a
+  write method (`insertOne`, `updateMany`, `deleteMany`, `replaceOne`,
+  `drop`, `createIndex`, `createView`, `renameCollection`, `bulkWrite`,
+  `runCommand`, `adminCommand`, `createUser`, ...), a `$out` or `$merge`
+  stage, `load()`, or a script (`-f`, `--file`, a `.js` or `.mjs` file,
+  `< file`, a pipe into the shell); `mongoimport`, `mongorestore` and
+  `mongofiles` always. Denied behind `docker exec`, `ssh`, `sudo` and
+  `bash -c` too; reads, `mongodump` and `mongoexport` are left to the
+  client. A MongoDB MCP server's tools are named by the engine: one named
+  for a write (`insert-many`, `drop-collection`, ...) is denied, and so is
+  one handed a command document that writes.
+- **`install`, `doctor`, `hook`, `mcp`, `skill lint`** over pythia-core,
+  field-tested in a scratch project: `doctor` passes, the brief carries the
+  STATE lines, the guard denies a mongosh `deleteMany` and a `$merge`
+  through an MCP aggregate, and allows a pythia-mongo read.
+- **`deploy`:** a data release — one command document or a JSON array of
+  them per file — rehearsed and committed as one transaction under one
+  approval. A validator, view, index or collection command is refused
+  before anything is written: MongoDB runs it outside any transaction.
+- **`lint` and seven rules:** a validator that only warns or is off, a
+  `$jsonSchema` with no `required` list (a note), a new collection without
+  a validator in the same change, a unique index on an optional field that
+  is neither partial nor sparse, a TTL index, an update that replaces whole
+  documents. Naming patterns apply to views (`VIEW`) and validators
+  (`VALIDATOR`).
+- **Seven skills:** `using-pythia-mongo` (the router),
+  `pythia-mongo-explore`, `-impact` (the application code the database
+  cannot see), `-apply` (rehearsed or predicted, with its refusals),
+  `-deploy`, `-autopilot`, `-verify` — `WRITTEN?` named where it can
+  appear.
+- **The live check** also deploys a data release (each command seeing the
+  ones before it; documents that move roll it back whole; a failing second
+  command keeps nothing of the first; an index in a release is refused),
+  shows a lint finding in a real preview, and lands a predicted view
+  change under an autopilot lease — on MongoDB 7.0 and 8.0.
+
 ## 0.2.0.dev0 — unreleased
 
 Phase 5b of the plan in pythia-core's DESIGN.md: MongoDB's write tier, on

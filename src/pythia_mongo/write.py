@@ -675,3 +675,40 @@ def privilege_warning(conn, schema):
             "needs. A user with readWrite on this database (and dbAdmin for indexes, "
             "validators and views) is safer.")
 
+
+# --- the release tier ---------------------------------------------------------------------
+
+def split_script(text):
+    """(line, statement) for each command document of a release file: one
+    document, or a JSON array of them. Anything else comes back whole, at
+    line 1, for classify to say why it is refused."""
+    stripped = str(text or "").strip()
+    if not stripped:
+        return []
+    start = text.index(stripped[0])
+    if stripped[0] != "[":
+        return [(1, stripped)]
+    decoder, out = json.JSONDecoder(), []
+    i, n = start + 1, len(text)
+
+    def skip(j):
+        while j < n and text[j] in " \t\r\n":
+            j += 1
+        return j
+    try:
+        i = skip(i)
+        if i < n and text[i] == "]":
+            return [] if not text[i + 1:].strip() else [(1, stripped)]
+        while True:
+            _, end = decoder.raw_decode(text, i)
+            out.append((text.count("\n", 0, i) + 1, text[i:end]))
+            i = skip(end)
+            if i < n and text[i] == ",":
+                i = skip(i + 1)
+                continue
+            if i < n and text[i] == "]" and not text[i + 1:].strip():
+                return out
+            return [(1, stripped)]
+    except ValueError:
+        return [(1, stripped)]
+

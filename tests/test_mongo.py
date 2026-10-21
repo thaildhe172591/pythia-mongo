@@ -922,6 +922,255 @@ def test_the_engine_answers_the_write_and_predict_tiers():
     assert set(notes) == set(policy.GROUPS) and all(notes.values())
 
 
+# --- Phase 5c: the harness, release and lint tiers, and the skill pack ----------------
+
+from pythia_core import harness, skills as skill_contract  # noqa: E402
+
+SKILL_NAMES = ("using-pythia-mongo", "pythia-mongo-apply", "pythia-mongo-autopilot",
+               "pythia-mongo-deploy", "pythia-mongo-explore", "pythia-mongo-impact",
+               "pythia-mongo-verify")
+
+
+@contextlib.contextmanager
+def scratch_project():
+    keep = {k: os.environ.pop(k) for k in list(os.environ) if k.startswith("PYTHIA_")}
+    with tempfile.TemporaryDirectory() as td:
+        root = pathlib.Path(td).resolve()
+        cfg = root / ".pythia" / "mongo" / "connections.json"
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text(json.dumps({"dev": {"host": "localhost", "database": "app"}}),
+                       encoding="utf-8")
+        try:
+            yield root
+        finally:
+            os.environ.update(keep)
+
+
+def guard(root, command, tool="Bash"):
+    tin = {"command": command} if tool == "Bash" else \
+        command if isinstance(command, dict) else {"query": command}
+    out = harness.pre_tool_decision(MongoEngine(), {
+        "tool_name": tool, "tool_input": tin, "cwd": str(root)})
+    return out and out["hookSpecificOutput"]["permissionDecision"]
+
+
+def test_the_engine_answers_the_harness_release_and_lint_tiers():
+    assert engine_problems(MongoEngine(), tiers=(
+        "connect", "read", "write", "predict", "harness", "release", "lint")) == []
+
+
+def test_a_release_file_is_one_document_or_an_array_of_them():
+    split = MongoEngine().split_script
+    one = '{"insert": "t_order", "documents": [{"_id": 9}]}\n'
+    assert split(one) == [(1, '{"insert": "t_order", "documents": [{"_id": 9}]}')]
+    many = ('[\n  {"insert": "t_order", "documents": [{"_id": 9, "note": "a, b ] {"}]},\n\n'
+            '  {"update": "t_order",\n   "updates": [{"q": {"_id": 9}, "u": {"$set": {"x": 1}}}]}\n]\n')
+    got = split(many)
+    assert [ln for ln, _ in got] == [2, 4], got
+    assert json.loads(got[0][1])["documents"][0]["note"] == "a, b ] {"
+    assert write.classify(got[1][1])[0] == "data_dml"
+    assert split("[]") == [] and split("  \n") == []
+    for bad in ("[{}, ", "{} {}", "[1, 2", "[] {}", '[{"drop": "t"}] {"drop": "u"}'):
+        assert split(bad) == [(1, bad.strip())], bad       # classify says why, at line 1
+
+
+def test_the_guard_denies_mongosh_writing_around_the_gate():
+    with scratch_project() as root:
+        for cmd in ('mongosh app --eval "db.t_order.insertOne({_id: 9})"',
+                    "mongosh app --eval 'db.t_order.updateMany({}, {$set: {x: 1}})'",
+                    'mongosh --eval "db.t_order.deleteOne({_id: 1})"',
+                    'mongosh --eval "db.t_order.drop()"',
+                    'mongosh --eval "db.t_order.createIndex({ref: 1})"',
+                    'mongosh --eval "db.t_order.dropIndex(\'ix_ref\')"',
+                    'mongosh --eval "db.runCommand({collMod: \'t_order\', validator: {}})"',
+                    'mongosh --eval "db.adminCommand({shutdown: 1})"',
+                    'mongosh --eval "db.createView(\'v\', \'t\', [])"',
+                    'mongosh --eval "db.t_order.aggregate([{$out: \'t_copy\'}])"',
+                    'mongosh --eval "db.t_order.findOneAndUpdate({}, {$set: {x: 1}})"',
+                    'mongosh --eval "db.t_order.bulkWrite([])"',
+                    'mongosh --eval "db.dropDatabase()"',
+                    "mongosh --eval \"load('fix.js')\"",
+                    'mongosh --eval "db.t_order.updateOne({_id: 1}, {$set: {x: 1}})"',
+                    'mongosh --eval "db.t_order.replaceOne({_id: 1}, {x: 1})"',
+                    'mongosh --eval "db.t_order.deleteMany({})"',
+                    'mongosh --eval "db.t_order.ensureIndex({ref: 1})"',
+                    'mongosh --eval "db.t_order.renameCollection(\'t_old\')"',
+                    'mongosh --eval "db.t_order.findOneAndDelete({_id: 1})"',
+                    'mongosh --eval "db.runCommand({compact: \'t_order\'})"',
+                    'mongosh --eval "db.createUser({user: \'u\', roles: []})"',
+                    "mongosh mongodb://db/app fix.js", "mongosh app migrate.mjs",
+                    "mongosh app --file fix.mongodb", "mongosh app -f fix.mongodb",
+                    "mongosh app < fix.mongodb", "cat fix.mongodb | mongosh app",
+                    "mongo app --eval 'db.t.remove({})'",
+                    "mongoimport --db app --collection t_order --file orders.json",
+                    "mongorestore --db app dump/", "mongofiles put report.pdf",
+                    'docker exec db mongosh -u root --eval "db.t_order.drop()"',
+                    "/usr/bin/mongosh --eval 'db.t.insertMany([])'",
+                    """ssh db 'mongosh app --eval "db.t_order.drop()"'""",
+                    "sudo mongorestore --db app dump/",
+                    'bash -c "mongosh app -f fix.mongodb"',
+                    """mongosh --eval "db.t.find({note: '.drop('})" """):
+            assert guard(root, cmd) == "deny", cmd
+
+
+def test_the_guard_leaves_mongosh_reads_to_the_client():
+    with scratch_project() as root:
+        for cmd in ('mongosh app --eval "db.t_order.find({status: \'PAID\'}).toArray()"',
+                    'mongosh app --eval "db.t_order.countDocuments()"',
+                    'mongosh app --eval "db.t_order.getIndexes()"',
+                    'mongosh app --eval "db.t_order.aggregate([{$match: {}}])"',
+                    "mongosh --version", "mongodump --db app --out dump/",
+                    "mongoexport --db app --collection t_order --out orders.json",
+                    "docker run -d mongo:7.0", "pip install pymongo",
+                    'diff <(mongosh app --quiet --eval "db.t.countDocuments()") want.txt'):
+            assert guard(root, cmd) is None, cmd
+        assert guard(root, 'pythia-mongo ls "t_order%"') == "allow"
+        assert guard(root, '{"drop": "t_order"}', tool="mcp__mongodb__run_command") == "deny"
+        assert guard(root, "db.t_order.insertOne({})", tool="mcp__mongodb__query") == "deny"
+        assert guard(root, '{"find": "t_order"}', tool="mcp__mongodb__query") is None
+        # an MCP tool's input is a document: what it writes is in its keys
+        assert guard(root, {"database": "app", "collection": "t_order",
+                            "pipeline": [{"$match": {}}, {"$merge": "t_copy"}]},
+                     tool="mcp__mongodb__aggregate") == "deny"
+        assert guard(root, {"database": "app", "command": {"collMod": "t_order",
+                                                           "validator": {}}},
+                     tool="mcp__mongodb__run-command") == "deny"
+        assert guard(root, {"database": "app", "collection": "t_order",
+                            "filter": {"status": "PAID"}, "limit": 5},
+                     tool="mcp__mongodb__find") is None
+        for key in ("insert", "update", "delete", "collMod", "create", "createIndexes"):
+            assert guard(root, json.dumps({key: "t_order"}),
+                         tool="mcp__mongodb__run_command") == "deny", key
+        # MongoDB's MCP servers name a write by its tool, not by what it carries
+        for name in ("insert-many", "update-many", "delete-many", "drop-collection",
+                     "create-index", "rename-collection", "replace_one", "bulk-write",
+                     "collection_insert", "collection-update", "collection-delete",
+                     "index_drop", "atlas-create-db-user", "collection-rename"):
+            assert guard(root, '{"collection": "t_order"}',
+                         tool=f"mcp__mongodb__{name}") == "deny", name
+        for name in ("find", "aggregate", "count", "list-collections",
+                     "collection-schema", "collection-indexes", "explain"):
+            assert guard(root, '{"collection": "t_order"}',
+                         tool=f"mcp__mongodb__{name}") is None, name
+
+
+def test_install_scaffolds_the_example_config():
+    example = json.loads((ROOT / "examples" / "connections.example.json")
+                         .read_text(encoding="utf-8"))
+    assert MongoEngine().connections_template() == example
+
+
+def test_the_skill_pack_holds_the_contract_and_routes_every_skill():
+    pack = skill_contract.pack(MongoEngine().skills_dir())
+    assert tuple(sorted(p.name for p in pack)) == tuple(sorted(SKILL_NAMES))
+    for skill in pack:
+        assert skill_contract.lint(skill / "SKILL.md") == [], skill.name
+    router = (MongoEngine().skills_dir() / "using-pythia-mongo" / "SKILL.md") \
+        .read_text(encoding="utf-8")
+    for name in SKILL_NAMES[1:]:
+        assert f"`{name}`" in router, f"the router never routes to {name}"
+    for named in set(re.findall(r"`(pythia-mongo-[a-z-]+)`", router)):
+        assert named in SKILL_NAMES, f"the router names a skill that is not shipped: {named}"
+    text = "\n".join((s / "SKILL.md").read_text(encoding="utf-8") for s in pack)
+    for needle in ("pythia-mongo approve <token>", "--confirm <token>", "WRITTEN?",
+                   "predicted — nothing ran", "mongosh", "application code"):
+        assert needle in text, needle
+    apply_skill = (MongoEngine().skills_dir() / "pythia-mongo-apply" / "SKILL.md") \
+        .read_text(encoding="utf-8")
+    doors = [apply_skill.index(d) for d in (
+        "AskUserQuestion", "pythia_mongo_approve", "pythia-mongo approve <token>")]
+    assert doors == sorted(doors), "the apply skill names the doors out of order"
+    assert "pythia-mongo approve --card <token>" in apply_skill
+
+
+def test_the_skills_ship_in_the_wheel():
+    toml = pyproject()
+    for glob in ('"skills/*/SKILL.md"', '"skills/*/reference/*.md"'):
+        assert glob in toml, f"package-data misses {glob}"
+
+
+def test_the_mcp_approver_answers_as_a_real_process():
+    import subprocess
+    core_src = pathlib.Path(sys.modules["pythia_core"].__file__).resolve().parent.parent
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(ROOT / "src"), str(core_src)])}
+    session = "".join(json.dumps(m) + "\n" for m in (
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+         "params": {"name": "pythia_mongo_approve", "arguments": {"token": "abc123"}}}))
+    with tempfile.TemporaryDirectory() as td:
+        r = subprocess.run([sys.executable, "-m", "pythia_mongo", "mcp"],
+                           input=session, capture_output=True, text=True, cwd=td,
+                           env=env, timeout=60)
+    assert r.returncode == 0, r.stderr
+    out = [json.loads(line) for line in r.stdout.splitlines()]
+    assert out[0]["result"]["serverInfo"]["name"] == "pythia_mongo"
+    assert [t["name"] for t in out[1]["result"]["tools"]] == ["pythia_mongo_approve"]
+    assert out[2]["result"]["isError"]
+
+
+def lint_ids(*statements):
+    from pythia_core import lint
+    stmts = [{"file": "f.json", "line": 1, "text": t, "group": write.classify(t)[0],
+              "n": i + 1} for i, t in enumerate(statements)]
+    found = lint.run(MongoEngine(), {"severity": {}, "naming": {}}, stmts)
+    return {(f["rule"], f["n"], f["line"]) for f in found}, found
+
+
+def rules_of(*statements):
+    return {r for r, _, _ in lint_ids(*statements)[0]}
+
+
+def test_lint_reads_how_a_validator_lets_documents_through():
+    warn = doc(collMod="t_order", validator={"$jsonSchema": {"required": ["a"]}},
+               validationAction="warn")
+    ids, found = lint_ids(warn)
+    assert ("mongo-validation-warn", 1, 1) in ids
+    assert "mongo-validation-off" in rules_of(doc(collMod="t_order", validationLevel="off"))
+    assert "mongo-validator-required" in rules_of(
+        doc(collMod="t_order", validator={"$jsonSchema": {"properties": {"a": {}}}}))
+    assert not rules_of(doc(collMod="t_order", validator={"$jsonSchema": {"required": ["a"]}}))
+    multi = ('{\n  "collMod": "t_order",\n  "validator": {"$jsonSchema": {"required": ["a"]}},\n'
+             '  "validationAction": "warn"\n}')
+    assert ("mongo-validation-warn", 1, 4) in lint_ids(multi)[0]     # the line it is on
+
+
+def test_lint_asks_every_new_collection_for_a_validator():
+    assert "mongo-collection-validator" in rules_of(doc(create="t_note"))
+    assert not rules_of(doc(create="t_note", validator={"$jsonSchema": {"required": ["a"]}}))
+    assert "mongo-collection-validator" not in rules_of(doc(create="v", viewOn="t", pipeline=[]))
+    assert "mongo-collection-validator" not in rules_of(
+        doc(create="t_note"), doc(collMod="t_note", validator={"$jsonSchema": {"required": ["a"]}}))
+    assert "mongo-collection-validator" in rules_of(      # another collection's validator
+        doc(create="t_note"), doc(collMod="t_order", validator={"$jsonSchema": {"required": ["a"]}}))
+    assert "mongo-collection-validator" in rules_of(      # a collMod that holds none
+        doc(create="t_note"), doc(collMod="t_note", validationLevel="moderate"))
+
+
+def test_lint_reads_what_an_index_does_to_documents():
+    unique = doc(createIndexes="t_order", indexes=[{"key": {"ref": 1}, "name": "ux_ref",
+                                                     "unique": True}])
+    assert "mongo-unique-optional" in rules_of(unique)
+    assert "mongo-unique-optional" not in rules_of(doc(createIndexes="t_order", indexes=[
+        {"key": {"ref": 1}, "name": "ux_ref", "unique": True,
+         "partialFilterExpression": {"ref": {"$exists": True}}}]))
+    assert "mongo-unique-optional" not in rules_of(doc(createIndexes="t_order", indexes=[
+        {"key": {"ref": 1}, "name": "ux_ref", "unique": True, "sparse": True}]))
+    assert "mongo-ttl" in rules_of(doc(createIndexes="t_log", indexes=[
+        {"key": {"at": 1}, "name": "ttl_at", "expireAfterSeconds": 86400}]))
+    assert not rules_of(doc(createIndexes="t_order", indexes=[{"key": {"ref": 1}, "name": "ix_ref"}]))
+
+
+def test_lint_warns_when_an_update_replaces_whole_documents():
+    assert "mongo-update-replacement" in rules_of(doc(update="t_order", updates=[
+        {"q": {"_id": 1}, "u": {"status": "PAID"}}]))
+    assert not rules_of(doc(update="t_order", updates=[
+        {"q": {"_id": 1}, "u": {"$set": {"status": "PAID"}}}]))
+    assert not rules_of(doc(update="t_order", updates=[
+        {"q": {"_id": 1}, "u": [{"$set": {"status": "PAID"}}]}]))
+
+
 def main():
     failed = 0
     for name, fn in sorted(globals().items()):

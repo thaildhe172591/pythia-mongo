@@ -10,7 +10,9 @@
    dbAdmin), and every write path runs through the gate: a validator
    predicted, approved, written and restored, and one whose prediction
    moved; views; indexes, a unique one refused for its duplicates; data
-   rehearsed in a transaction, rows that move; a drop that breaks a view.
+   rehearsed in a transaction, rows that move; a release of data through
+   `deploy`, landed whole or not at all; a lint finding in a real preview;
+   a write under an autopilot lease; a drop that breaks a view.
 
 Never point this at a shared server: it creates a user and drops a
 database. Skipped unless PYTHIA_MONGO_LIVE_HOST is set:
@@ -262,6 +264,9 @@ def check_writes(entry):
         _views(entry, p)
         _indexes(entry, p)
         _data(entry, p)
+        _release(entry, p)
+        _lint(entry, p)
+        _lease(entry, p)
         _drop(entry, p)
     finally:
         human.FORCE_CONSOLE = None
@@ -395,6 +400,104 @@ def _data(entry, p):
     with admin(entry) as client:
         assert client[DB]["t_order"].find_one({"_id": 9}) is None
     ok("a document the validator rejects fails its rehearsal: nothing to approve")
+
+
+RELEASE = """[
+  {"update": "t_order",
+   "updates": [{"q": {"status": "DRAFT"}, "u": {"$set": {"status": "PAID"}}, "multi": true}]},
+  {"insert": "t_order", "documents": [{"_id": 50, "status": "DRAFT", "total": 5, "ref": "A-50"}]}
+]
+"""
+RAISE_50 = {"update": "t_order", "updates": [{"q": {"_id": 50}, "u": {"$inc": {"total": 1}}}]}
+
+
+def _order(entry, oid):
+    with admin(entry) as client:
+        return client[DB]["t_order"].find_one({"_id": oid})
+
+
+def _release(entry, p):
+    """deploy: data, rehearsed as one transaction, landed as one, or not at all."""
+    p.file("rel.json", RELEASE)
+    p.file("raise.json", RAISE_50)
+    code, doc, why = p.confirm("deploy", "rel.json", "raise.json")
+    assert code == 0, (why, doc)
+    assert [(m["line"], m["group"]) for m in doc["members"]] == [
+        (2, "data_dml"), (4, "data_dml"), (1, "data_dml")], doc["members"]
+    # the last update was rehearsed against the document the release inserts
+    assert doc["members"][2]["row_set"]["count"] == 1, doc["members"][2]
+    assert _order(entry, 50) is None and _order(entry, 1)["status"] == "DRAFT"
+    ok("deploy rehearses a data release as one transaction: each command sees "
+       "the ones before it")
+
+    code, _, why = p.run("approve", "--card", doc["members"][0]["token"])
+    assert code == 1 and "approved as a whole" in why, why
+    p.approve(doc["batch"])
+    with admin(entry) as client:          # a document moves after approval
+        client[DB]["t_order"].update_one({"_id": 1}, {"$inc": {"total": 1}})
+    code, _, why = p.confirm("deploy", "rel.json", "raise.json", "--confirm", doc["batch"])
+    assert code == 1 and "statement 1" in why and "nothing was written" in why.lower(), why
+    assert _order(entry, 50) is None and _order(entry, 1)["status"] == "DRAFT"
+    ok("a release whose documents moved after approval rolls back whole")
+
+    code, doc, why = p.confirm("deploy", "rel.json", "raise.json")
+    p.approve(doc["batch"])
+    code, res, why = p.confirm("deploy", "rel.json", "raise.json", "--confirm", doc["batch"])
+    assert code == 0 and res["applied"], (why, res)
+    assert _order(entry, 1)["status"] == "PAID" and _order(entry, 50)["total"] == 6
+    ok("an approved release lands whole, in one commit")
+
+    code, _, why = p.run("deploy", p.file("bad.json", [
+        {"insert": "t_order", "documents": [{"_id": 51, "status": "DRAFT", "total": 1}]},
+        {"insert": "t_order", "documents": [{"_id": 52, "status": "NOPE", "total": 1}]}]))
+    assert code == 1 and "121" in why, why
+    assert _order(entry, 51) is None
+    ok("a release that fails at its second command keeps nothing of the first")
+
+    code, _, why = p.run("deploy", p.file("mixed.json", [
+        {"insert": "t_order", "documents": [{"_id": 53, "status": "DRAFT", "total": 1}]},
+        {"createIndexes": "t_order", "indexes": [{"key": {"total": 1}, "name": "ix_t"}]}]))
+    assert code == 1 and "cannot be rehearsed" in why, why
+    assert _order(entry, 53) is None and "ix_t" not in indexes(entry, "t_order")
+    ok("a release holding a command MongoDB runs outside a transaction is refused")
+
+
+def _lint(entry, p):
+    code, doc, why = p.confirm("apply", p.file("warn.json", (
+        '{\n  "collMod": "t_order",\n'
+        '  "validator": {"$jsonSchema": {"required": ["status", "total"]}},\n'
+        '  "validationAction": "warn"\n}\n')))
+    assert code == 0, why
+    found = [(f["rule"], f["line"], f["severity"]) for f in doc["lint"]]
+    assert ("mongo-validation-warn", 4, "warn") in found, found
+    code, out, why = p.run("lint", "warn.json")
+    assert code == 0 and "mongo-validation-warn" in out, (why, out)
+    ok("lint: a validator that only warns is named in a real preview")
+
+
+def _lease(entry, p):
+    """autopilot: one approved lease lands covered writes, and nothing else."""
+    code, doc, why = p.confirm("autopilot", "request", "--groups", "source",
+                               "--max-writes", "2")
+    assert code == 0 and len(doc["token"]) == 8, why
+    view = {"collMod": "v_paid_big", "viewOn": "v_paid",
+            "pipeline": [{"$match": {"total": {"$gt": 20}}}]}
+    code, doc2, _ = p.confirm("apply", p.file("v1.json", view))
+    assert code == 0 and doc2["will_apply"] is False         # a request is no lease
+    p.approve(doc["token"])
+    code, res, why = p.confirm("apply", "v1.json")
+    assert code == 0 and res["applied"] and res["confirmed_via"] == "autopilot", (why, res)
+    assert res["predicted"] and res["differs"] == [], res
+    assert options(entry, "v_paid_big")["pipeline"] == view["pipeline"]
+    code, doc3, why = p.confirm("apply", p.file("ix.json", {
+        "createIndexes": "t_order", "indexes": [{"key": {"total": 1}, "name": "ix_lease"}]}))
+    assert code == 0 and doc3["will_apply"] is False, why
+    assert "does not cover structural" in doc3["autopilot"]["why"], doc3["autopilot"]
+    assert "ix_lease" not in indexes(entry, "t_order")
+    code, report, _ = p.confirm("autopilot", "report")
+    assert [w["verdict"] for w in report["writes"]] == ["ok"], report
+    assert p.run("autopilot", "off")[0] == 0
+    ok("autopilot: an approved lease lands a covered, predicted write, and only that")
 
 
 def _drop(entry, p):

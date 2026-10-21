@@ -7,9 +7,10 @@ what it cannot see — the application code around it — is said in every
 answer that depends on it. Data is rehearsed in a transaction; everything
 else is predicted, written once, and read back (pythia-core's predict tier).
 """
+import copy
 import sys
 
-from . import __version__, read, write
+from . import __version__, guard, read, write
 from .catalog import run
 
 # reads a transaction may hold; listCollections and listIndexes it may not
@@ -263,3 +264,38 @@ class MongoEngine:
     def verify_written(self, conn, schema, group, stmt, ident, outcome):
         return write.verify_written(conn, schema, group, stmt, ident, outcome,
                                     self.driver_errors())
+
+    # --- the release tier (write.py) ---------------------------------------------
+
+    def split_script(self, text):
+        return write.split_script(text)
+
+    # --- the lint tier (rules.py) ------------------------------------------------
+
+    def lint_rules(self):
+        from . import rules
+        return list(rules.RULES)
+
+    # --- the harness tier (guard.py) ---------------------------------------------
+
+    def raw_client_pattern(self):
+        return guard.CLIENTS
+
+    def write_sql_pattern(self):
+        return guard.WRITE_SQL
+
+    def script_pattern(self):
+        return guard.SCRIPT
+
+    def connections_template(self):
+        return copy.deepcopy(guard.TEMPLATE)
+
+    def skills_dir(self):
+        return guard.SKILLS_DIR
+
+    def mcp_tool_pattern(self):
+        return guard.MCP_TOOLS
+
+    def mcp_write_tool_pattern(self):
+        return guard.MCP_WRITE_TOOLS
+

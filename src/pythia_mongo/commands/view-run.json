@@ -1,0 +1,24 @@
+{
+  "purpose": "whether a view's pipeline still runs, over its first documents",
+  "binds": {
+    "n": "the view",
+    "k": "how many documents to run it on"
+  },
+  "returns": "aggregate cursor: one document {n} (or none for an empty view)",
+  "command": {
+    "aggregate": {
+      "$bind": "n"
+    },
+    "pipeline": [
+      {
+        "$limit": {
+          "$bind": "k"
+        }
+      },
+      {
+        "$count": "n"
+      }
+    ],
+    "cursor": {}
+  }
+}

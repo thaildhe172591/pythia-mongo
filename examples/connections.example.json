@@ -1,0 +1,13 @@
+{
+  "default": "dev",
+
+  "dev": {
+    "host": "",
+    "port": 27017,
+    "database": "",
+    "user": "",
+    "password": "",
+    "auth_source": "admin",
+    "tls": false
+  }
+}

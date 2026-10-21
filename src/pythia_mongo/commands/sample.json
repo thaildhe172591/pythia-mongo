@@ -1,0 +1,23 @@
+{
+  "purpose": "a random sample of documents, for `cols` to read field names and types from",
+  "binds": {
+    "n": "the collection or view",
+    "k": "how many documents at most"
+  },
+  "returns": "aggregate cursor: the sampled documents",
+  "command": {
+    "aggregate": {
+      "$bind": "n"
+    },
+    "pipeline": [
+      {
+        "$sample": {
+          "size": {
+            "$bind": "k"
+          }
+        }
+      }
+    ],
+    "cursor": {}
+  }
+}

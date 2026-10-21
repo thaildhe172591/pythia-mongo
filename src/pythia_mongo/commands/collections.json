@@ -1,0 +1,29 @@
+{
+  "purpose": "every collection and view whose name matches a pattern, system collections left out",
+  "binds": {
+    "p": "the name as an anchored regular expression (catalog.like_regex)"
+  },
+  "returns": "listCollections cursor: name, type, options (validator, validationLevel, validationAction, viewOn, pipeline, ...)",
+  "command": {
+    "listCollections": 1,
+    "filter": {
+      "$and": [
+        {
+          "name": {
+            "$regex": {
+              "$bind": "p"
+            }
+          }
+        },
+        {
+          "name": {
+            "$not": {
+              "$regex": "^system\\."
+            }
+          }
+        }
+      ]
+    },
+    "nameOnly": false
+  }
+}

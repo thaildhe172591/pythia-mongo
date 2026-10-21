@@ -1,0 +1,12 @@
+{
+  "purpose": "about how many documents a collection holds (from its metadata, without a scan)",
+  "binds": {
+    "n": "the collection or view"
+  },
+  "returns": "count: n",
+  "command": {
+    "count": {
+      "$bind": "n"
+    }
+  }
+}

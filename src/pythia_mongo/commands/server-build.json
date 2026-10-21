@@ -1,0 +1,9 @@
+{
+  "purpose": "the server's version, for `check`",
+  "binds": {},
+  "returns": "buildInfo: version",
+  "database": "admin",
+  "command": {
+    "buildInfo": 1
+  }
+}

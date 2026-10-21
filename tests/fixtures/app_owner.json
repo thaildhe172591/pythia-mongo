@@ -1,0 +1,33 @@
+[
+  {"create": "t_order",
+   "validator": {"$jsonSchema": {
+     "bsonType": "object", "required": ["status", "total"],
+     "properties": {
+       "status": {"enum": ["DRAFT", "PAID"], "description": "DRAFT until paid"},
+       "total": {"bsonType": ["int", "double", "decimal"], "minimum": 0},
+       "created": {"bsonType": "date"}}}},
+   "validationLevel": "strict", "validationAction": "error"},
+  {"createIndexes": "t_order", "indexes": [
+     {"key": {"status": 1}, "name": "ix_order_status"},
+     {"key": {"ref": 1}, "name": "ux_order_ref", "unique": true,
+      "partialFilterExpression": {"ref": {"$exists": true}}}]},
+  {"insert": "t_order", "documents": [
+     {"_id": 1, "status": "DRAFT", "total": 10, "ref": "A-1", "created": {"$date": "2026-01-05T10:00:00Z"}},
+     {"_id": 2, "status": "PAID", "total": 20.5, "ref": "A-2", "created": {"$date": "2026-01-06T10:00:00Z"}},
+     {"_id": 3, "status": "PAID", "total": 30, "created": {"$date": "2026-01-07T10:00:00Z"}}]},
+  {"create": "t_order_line", "validator": {"order_id": {"$exists": true}},
+   "validationLevel": "moderate", "validationAction": "warn"},
+  {"insert": "t_order_line", "documents": [
+     {"order_id": 1, "sku": "X", "qty": 2},
+     {"sku": "Y", "qty": 1}]},
+  {"create": "t_customer"},
+  {"insert": "t_customer", "documents": [
+     {"name": "An", "address": {"city": "Hue"}, "tags": ["vip"]},
+     {"name": "Binh", "tags": []}]},
+  {"create": "v_paid", "viewOn": "t_order", "pipeline": [{"$match": {"status": "PAID"}}]},
+  {"create": "v_paid_big", "viewOn": "v_paid", "pipeline": [{"$match": {"total": {"$gt": 25}}}]},
+  {"create": "v_order_lines", "viewOn": "t_order", "pipeline": [
+     {"$lookup": {"from": "t_order_line", "localField": "_id", "foreignField": "order_id", "as": "lines"}}]},
+  {"create": "v_status_int", "viewOn": "t_order", "pipeline": [{"$project": {"n": {"$toInt": "$status"}}}]},
+  {"create": "v_ghost", "viewOn": "t_missing", "pipeline": []}
+]

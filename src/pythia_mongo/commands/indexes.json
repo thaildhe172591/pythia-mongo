@@ -1,0 +1,12 @@
+{
+  "purpose": "the indexes of one collection, for `ddl`",
+  "binds": {
+    "n": "the collection's name"
+  },
+  "returns": "listIndexes cursor: v, key, name and each index's options",
+  "command": {
+    "listIndexes": {
+      "$bind": "n"
+    }
+  }
+}

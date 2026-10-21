@@ -1,0 +1,16 @@
+{
+  "purpose": "one collection or view by its exact name",
+  "binds": {
+    "n": "the name, as written"
+  },
+  "returns": "listCollections cursor: at most one document (name, type, options)",
+  "command": {
+    "listCollections": 1,
+    "filter": {
+      "name": {
+        "$bind": "n"
+      }
+    },
+    "nameOnly": false
+  }
+}

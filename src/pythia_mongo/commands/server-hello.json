@@ -1,0 +1,9 @@
+{
+  "purpose": "what this server is: standalone, a replica set member (primary or not), or mongos",
+  "binds": {},
+  "returns": "hello: setName, isWritablePrimary, secondary, msg",
+  "database": "admin",
+  "command": {
+    "hello": 1
+  }
+}

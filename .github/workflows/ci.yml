@@ -1,0 +1,86 @@
+name: ci
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.9", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/checkout-core
+        with:
+          token: ${{ secrets.PYTHIA_CORE_TOKEN || github.token }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      # nothing to install: the suite stands in for pymongo and finds core's src/
+      - run: python -m compileall -q src tests
+      - run: python tests/test_mongo.py
+        env:
+          PYTHIA_CORE_SRC: ${{ github.workspace }}/.core/src
+
+  live:
+    # a disposable server per run; never a shared one
+    strategy:
+      fail-fast: false
+      matrix:
+        mongo: ["7.0", "8.0"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/checkout-core
+        with:
+          token: ${{ secrets.PYTHIA_CORE_TOKEN || github.token }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      # a single-node replica set (transactions need one), with authentication;
+      # a service container cannot take --replSet, so a step starts it
+      - name: start MongoDB ${{ matrix.mongo }}
+        run: |
+          mkdir -p /tmp/mongo-key
+          openssl rand -base64 756 > /tmp/mongo-key/keyfile
+          chmod 400 /tmp/mongo-key/keyfile
+          sudo chown 999:999 /tmp/mongo-key/keyfile
+          docker run -d --name mongo -p 27017:27017 \
+            -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD=CiOnly-Disposable1 \
+            -v /tmp/mongo-key:/key "mongo:${{ matrix.mongo }}" \
+            --replSet rs0 --keyFile /key/keyfile --bind_ip_all
+          mongo() { docker exec mongo mongosh --quiet -u root -p CiOnly-Disposable1 --eval "$1"; }
+          for i in $(seq 1 60); do mongo 'db.runCommand({ping: 1}).ok' && break; sleep 2; done
+          mongo 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "127.0.0.1:27017"}]}).ok'
+          for i in $(seq 1 30); do mongo 'db.hello().isWritablePrimary' | grep -q true && break; sleep 2; done
+          mongo 'db.hello().isWritablePrimary' | grep -q true
+      - run: pip install ./.core .
+      - run: python tests/live_check.py
+        env:
+          PYTHIA_MONGO_LIVE_HOST: 127.0.0.1
+          PYTHIA_MONGO_LIVE_PORT: "27017"
+          PYTHIA_MONGO_LIVE_USER: root
+          PYTHIA_MONGO_LIVE_PASSWORD: CiOnly-Disposable1
+          PYTHIA_MONGO_LIVE_DISPOSABLE: "1"
+          PYTHIA_MONGO_LIVE_DIRECT: "1"
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/checkout-core
+        with:
+          token: ${{ secrets.PYTHIA_CORE_TOKEN || github.token }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip wheel . --no-deps -w dist
+      - run: pip install ./.core dist/*.whl
+      # the console script and the command files must work outside the repo layout
+      - run: cd /tmp && pythia-mongo version && pythia-mongo --help | grep -q impact
+      - run: cd /tmp && python -c "from pythia_mongo.catalog import COMMAND_BINDS, COMMAND_DIR; assert all((COMMAND_DIR / c).is_file() for c in COMMAND_BINDS)"

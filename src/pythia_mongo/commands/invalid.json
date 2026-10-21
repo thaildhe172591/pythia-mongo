@@ -1,0 +1,44 @@
+{
+  "purpose": "how many documents break a collection's validator as it stands, and the first of them",
+  "binds": {
+    "n": "the collection",
+    "v": "its validator, as listCollections gives it"
+  },
+  "returns": "aggregate cursor: one document {n: [{n}], first: [{_id}]}",
+  "command": {
+    "aggregate": {
+      "$bind": "n"
+    },
+    "pipeline": [
+      {
+        "$match": {
+          "$nor": [
+            {
+              "$bind": "v"
+            }
+          ]
+        }
+      },
+      {
+        "$facet": {
+          "n": [
+            {
+              "$count": "n"
+            }
+          ],
+          "first": [
+            {
+              "$limit": 3
+            },
+            {
+              "$project": {
+                "_id": 1
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "cursor": {}
+  }
+}
